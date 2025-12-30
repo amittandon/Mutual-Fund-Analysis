@@ -1,0 +1,5 @@
+{
+  "name": "Mutual Fund Analyser",
+  "description": "Analyze and backtest Indian Mutual Fund portfolios, comparing Direct vs. Regular plan performance to visualize the impact of expense ratios.",
+  "requestFramePermissions": []
+}
