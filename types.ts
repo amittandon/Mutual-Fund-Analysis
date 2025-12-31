@@ -20,6 +20,8 @@ export interface Investment {
   category?: string;
   fundHouse?: string;
   
+  source: 'API' | 'CUSTOM'; // New field to distinguish source
+
   isDirect: boolean;
   navHistory: NAVData[];
   
@@ -32,7 +34,7 @@ export interface Investment {
   startDate: string; // ISO Date string
   endDate?: string; // ISO Date string (Optional)
   
-  tags: string[]; // New field for categorization
+  tags: string[]; 
   
   isLoading: boolean;
   error?: string;
@@ -51,10 +53,10 @@ export interface ChartDataPoint {
 export interface PortfolioMetrics {
   totalInvested: number;
   currentValue: number;
-  regularValue: number; // Keep for legacy if needed, or map to All-Regular scenario
+  regularValue: number; 
   actualValue: number;
   counterpartValue: number;
-  netImpact: number; // Actual - Counterpart
+  netImpact: number; 
   yearlyImpact: number;
   xirr: number;
   absoluteReturn: number;
