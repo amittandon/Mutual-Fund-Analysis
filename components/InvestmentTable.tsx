@@ -1,14 +1,16 @@
 import React from 'react';
 import { Investment, InvestmentType } from '../types';
-import { Trash2, IndianRupee, Tag, ArrowRight, TrendingUp, AlertTriangle } from 'lucide-react';
+import { Trash2, IndianRupee, Tag, ArrowRight, TrendingUp, AlertTriangle, RefreshCw } from 'lucide-react';
 import { formatCurrency } from '../utils/financials';
 
 interface InvestmentTableProps {
   investments: Investment[];
   onRemove: (id: string) => void;
+  onRefresh?: (id: string) => void;
+  processingId?: string | null;
 }
 
-export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, onRemove }) => {
+export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, onRemove, onRefresh, processingId }) => {
   if (investments.length === 0) {
     return (
       <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-300 shadow-sm">
@@ -110,13 +112,25 @@ export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, o
                   )}
                 </td>
                 <td className="px-6 py-4 text-center">
-                  <button
-                    onClick={() => onRemove(inv.id)}
-                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                    title="Remove Investment"
-                  >
-                    <Trash2 size={16} />
-                  </button>
+                  <div className="flex items-center justify-center gap-2">
+                    {onRefresh && inv.source !== 'CUSTOM' && (
+                      <button
+                        onClick={() => onRefresh(inv.id)}
+                        disabled={processingId === inv.id}
+                        className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Refresh NAV"
+                      >
+                        <RefreshCw size={16} className={processingId === inv.id ? 'animate-spin' : ''} />
+                      </button>
+                    )}
+                    <button
+                      onClick={() => onRemove(inv.id)}
+                      className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Remove Investment"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}

@@ -17,8 +17,15 @@ const getNAV = (history: NAVData[], targetDate: Date, mode: 'PURCHASE' | 'VALUAT
   if (!history || history.length === 0) return null;
 
   const targetTime = targetDate.getTime();
+  const earliestDate = parseAPIDate(history[history.length - 1].date);
+  const latestDate = parseAPIDate(history[0].date);
   
   if (mode === 'PURCHASE') {
+    // If target is more than 31 days before the earliest known date, return null
+    if (targetTime < earliestDate.getTime() - 31 * 24 * 60 * 60 * 1000) {
+      return null;
+    }
+
     // Find first NAV >= targetDate (or closest future)
     for (let i = history.length - 1; i >= 0; i--) {
       const d = parseAPIDate(history[i].date);
@@ -27,13 +34,16 @@ const getNAV = (history: NAVData[], targetDate: Date, mode: 'PURCHASE' | 'VALUAT
       }
     }
     // If target is after last known date, return last known
-    const latestDate = parseAPIDate(history[0].date);
     if (targetTime > latestDate.getTime()) {
         return parseFloat(history[0].nav);
     }
     return null;
   } else {
     // Find closest NAV <= targetDate (Valuation)
+    if (targetTime < earliestDate.getTime()) {
+        return null;
+    }
+
     for (const entry of history) {
       const d = parseAPIDate(entry.date);
       if (d.getTime() <= targetTime) {
@@ -51,7 +61,7 @@ interface CashFlow {
 
 // Helper: Simulate a single investment to get precise Units and Cashflows
 // This unifies logic between Chart, KPIs, and Ratio tables.
-const simulateInvestment = (inv: Investment, navHistory: NAVData[] | undefined) => {
+export const simulateInvestment = (inv: Investment, navHistory: NAVData[] | undefined) => {
     const cashFlows: CashFlow[] = [];
     let units = 0;
     let totalInvested = 0;
@@ -119,6 +129,94 @@ const simulateInvestment = (inv: Investment, navHistory: NAVData[] | undefined) 
         cashFlows,
         currentValue
     };
+};
+
+export interface Installment {
+  date: Date;
+  investedAmount: number;
+  units: number;
+  purchaseNav: number;
+  currentNav: number;
+  currentValue: number;
+  gain: number;
+  holdingPeriodDays: number;
+  isLTCG: boolean;
+}
+
+export const getInstallments = (inv: Investment): Installment[] => {
+    const installments: Installment[] = [];
+    const navHistory = inv.navHistory;
+    
+    if (!navHistory || navHistory.length === 0) {
+        return installments;
+    }
+
+    const startDate = parseISODate(inv.startDate);
+    const endDate = inv.endDate ? parseISODate(inv.endDate) : null;
+    const now = new Date();
+    now.setHours(0,0,0,0);
+    const currentNav = parseFloat(navHistory[0].nav);
+
+    if (inv.type === InvestmentType.LUMPSUM) {
+        const nav = getNAV(navHistory, startDate, 'PURCHASE');
+        if (nav) {
+            const units = inv.amount / nav;
+            const currentValue = units * currentNav;
+            const holdingPeriodDays = (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
+            installments.push({
+                date: startDate,
+                investedAmount: inv.amount,
+                units,
+                purchaseNav: nav,
+                currentNav,
+                currentValue,
+                gain: currentValue - inv.amount,
+                holdingPeriodDays,
+                isLTCG: holdingPeriodDays > 365
+            });
+        }
+    } else {
+        const startDay = startDate.getDate();
+        let cursorDate = new Date(startDate);
+        cursorDate.setDate(1);
+
+        while (cursorDate <= now) {
+            const year = cursorDate.getFullYear();
+            const month = cursorDate.getMonth();
+
+            const maxDayInMonth = new Date(year, month + 1, 0).getDate();
+            const actualDay = Math.min(startDay, maxDayInMonth);
+            const paymentDate = new Date(year, month, actualDay);
+
+            const isStarted = paymentDate.getTime() >= startDate.getTime();
+            const isNotFuture = paymentDate <= now;
+            const isBeforeEnd = endDate ? paymentDate <= endDate : true;
+
+            if (isStarted && isNotFuture && isBeforeEnd) {
+                 const nav = getNAV(navHistory, paymentDate, 'PURCHASE');
+                 if (nav) {
+                     const units = inv.amount / nav;
+                     const currentValue = units * currentNav;
+                     const holdingPeriodDays = (now.getTime() - paymentDate.getTime()) / (1000 * 60 * 60 * 24);
+                     installments.push({
+                         date: paymentDate,
+                         investedAmount: inv.amount,
+                         units,
+                         purchaseNav: nav,
+                         currentNav,
+                         currentValue,
+                         gain: currentValue - inv.amount,
+                         holdingPeriodDays,
+                         isLTCG: holdingPeriodDays > 365
+                     });
+                 }
+            }
+            
+            cursorDate.setMonth(cursorDate.getMonth() + 1);
+        }
+    }
+
+    return installments;
 };
 
 export const generateBacktestData = (
@@ -195,11 +293,16 @@ export const generateBacktestData = (
       if (paymentDate) {
          if (inv.type === InvestmentType.LUMPSUM) inv.hasLumpsumInvested = true;
 
+         let investedThisMonth = false;
+
          // Calculate Direct Scenario Units
          // Note: Logic here explicitly separates Direct/Regular scenarios for the chart lines
          if (inv.isDirect && inv.navHistory?.length) {
              const nav = getNAV(inv.navHistory, paymentDate, 'PURCHASE');
-             if (nav) inv.unitsDirect += inv.amount / nav;
+             if (nav) {
+                 inv.unitsDirect += inv.amount / nav;
+                 investedThisMonth = true;
+             }
          } else if (!inv.isDirect && inv.counterpartNavHistory?.length) {
              const nav = getNAV(inv.counterpartNavHistory, paymentDate, 'PURCHASE');
              if (nav) inv.unitsDirect += inv.amount / nav;
@@ -208,7 +311,10 @@ export const generateBacktestData = (
          // Calculate Regular Scenario Units
          if (!inv.isDirect && inv.navHistory?.length) {
              const nav = getNAV(inv.navHistory, paymentDate, 'PURCHASE');
-             if (nav) inv.unitsRegular += inv.amount / nav;
+             if (nav) {
+                 inv.unitsRegular += inv.amount / nav;
+                 investedThisMonth = true;
+             }
          } else if (inv.isDirect && inv.counterpartNavHistory?.length) {
              const nav = getNAV(inv.counterpartNavHistory, paymentDate, 'PURCHASE');
              if (nav) inv.unitsRegular += inv.amount / nav;
@@ -222,7 +328,9 @@ export const generateBacktestData = (
              }
          }
 
-         inv.totalInvested += inv.amount;
+         if (investedThisMonth) {
+             inv.totalInvested += inv.amount;
+         }
       }
     });
 

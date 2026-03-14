@@ -7,19 +7,22 @@ import { InvestmentTable } from './components/InvestmentTable';
 import { ComparisonChart } from './components/ComparisonChart';
 import { BenchmarkSelector } from './components/BenchmarkSelector';
 import { AnalysisDashboard } from './components/AnalysisDashboard';
+import { TaxHarvesting } from './components/TaxHarvesting';
+import { FundPerformance } from './components/FundPerformance';
 import { Investment, InvestmentType, NAVData } from './types';
-import { getMFData, isDirectPlan, MFScheme } from './services/mfApiService';
+import { getMFData, isDirectPlan, MFScheme, DEAD_FUND_MAPPING } from './services/mfApiService';
 import { generateBacktestData, formatCurrency, calculatePortfolioStats } from './utils/financials';
-import { Info, FilterX, AlertCircle, BarChart3, PieChart, Download, Upload, Wallet, TrendingDown, TrendingUp, Activity, ShieldCheck, Tag, LayoutDashboard, List, PlusCircle, Database } from 'lucide-react';
+import { Info, FilterX, AlertCircle, BarChart3, PieChart, Download, Upload, Wallet, TrendingDown, TrendingUp, Activity, ShieldCheck, Tag, LayoutDashboard, List, PlusCircle, Database, Calculator, FileText, RefreshCw } from 'lucide-react';
 
 const App: React.FC = () => {
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [selectedInvestmentId, setSelectedInvestmentId] = useState<string | null>(null);
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingId, setProcessingId] = useState<string | null>(null);
   
   // Navigation State
-  const [currentTab, setCurrentTab] = useState<'DASHBOARD' | 'PORTFOLIO' | 'ADD_FUND' | 'ADD_CUSTOM'>('DASHBOARD');
+  const [currentTab, setCurrentTab] = useState<'DASHBOARD' | 'PORTFOLIO' | 'FUND_DETAILS' | 'ADD_FUND' | 'ADD_CUSTOM' | 'TAX_HARVESTING'>('DASHBOARD');
   const [analysisView, setAnalysisView] = useState<'CHART' | 'RATIOS'>('CHART');
   
   // Benchmark State
@@ -28,12 +31,58 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const migrateInvestments = (invs: Investment[]): Investment[] => {
+    return invs.map(inv => {
+      if (inv.source === 'CUSTOM') return inv;
+      
+      let updated = { ...inv };
+      let needsRefresh = false;
+
+      // Check main scheme
+      const codeStr = String(inv.schemeCode);
+      if (DEAD_FUND_MAPPING[codeStr]) {
+        updated.schemeCode = DEAD_FUND_MAPPING[codeStr].schemeCode;
+        updated.name = DEAD_FUND_MAPPING[codeStr].schemeName;
+        updated.navHistory = []; // Clear history to force refresh
+        needsRefresh = true;
+      }
+
+      // Check counterpart scheme
+      if (inv.counterpartSchemeCode) {
+        const cpCodeStr = String(inv.counterpartSchemeCode);
+        if (DEAD_FUND_MAPPING[cpCodeStr]) {
+          updated.counterpartSchemeCode = DEAD_FUND_MAPPING[cpCodeStr].schemeCode;
+          updated.counterpartName = DEAD_FUND_MAPPING[cpCodeStr].schemeName;
+          updated.counterpartNavHistory = []; // Clear history to force refresh
+          needsRefresh = true;
+        }
+      }
+
+      if (needsRefresh) {
+        updated.isLoading = true;
+      }
+
+      return updated;
+    });
+  };
+
   // Load from local storage
   useEffect(() => {
     const saved = localStorage.getItem('mf_portfolio_v2');
     if (saved) {
       try {
-        setInvestments(JSON.parse(saved));
+        const parsed = JSON.parse(saved);
+        const migrated = migrateInvestments(parsed);
+        setInvestments(migrated);
+        
+        // If any investments were migrated and need refresh, trigger it
+        if (migrated.some(i => i.isLoading)) {
+          // We can't easily call refreshNavs here because it depends on state,
+          // but the user can click "Refresh All NAVs" or we can just let the
+          // individual components fetch if they are missing data.
+          // Actually, let's just leave them as isLoading=true and let the user refresh,
+          // or we can trigger a refresh. Let's trigger a refresh.
+        }
       } catch (e) {
         console.error("Failed to parse saved portfolio");
       }
@@ -91,7 +140,8 @@ const App: React.FC = () => {
             if (isValid) {
                 // Ensure tags array exists for legacy imports
                 const sanitized = parsedData.map(i => ({ ...i, tags: i.tags || [] }));
-                setInvestments(sanitized);
+                const migrated = migrateInvestments(sanitized);
+                setInvestments(migrated);
             } else {
                 alert("Invalid portfolio file format.");
             }
@@ -209,6 +259,111 @@ const App: React.FC = () => {
     }
   };
 
+  const refreshSingleNav = async (id: string) => {
+    setProcessingId(id);
+    const inv = investments.find(i => i.id === id);
+    if (!inv || inv.source === 'CUSTOM') {
+      setProcessingId(null);
+      return;
+    }
+
+    try {
+      const mainData = await getMFData(inv.schemeCode);
+      let counterpartData = null;
+      if (inv.counterpartSchemeCode) {
+        counterpartData = await getMFData(inv.counterpartSchemeCode);
+      }
+      
+      setInvestments(prev => prev.map(i => {
+        if (i.id === id) {
+          return {
+            ...i,
+            navHistory: mainData?.data || i.navHistory,
+            counterpartNavHistory: counterpartData?.data || i.counterpartNavHistory,
+            isLoading: false,
+            error: undefined
+          };
+        }
+        return i;
+      }));
+    } catch (err) {
+      console.error(`Failed to refresh NAV for ${inv.name}`, err);
+    }
+    setProcessingId(null);
+  };
+
+  const fetchMissingNavs = async (invs: Investment[]) => {
+    const needingFetch = invs.filter(i => i.isLoading && i.source === 'API');
+    if (needingFetch.length === 0) return;
+
+    setIsProcessing(true);
+    const updatedInvs = [...invs];
+
+    await Promise.all(needingFetch.map(async (inv) => {
+      try {
+        const mainData = await getMFData(inv.schemeCode);
+        let counterpartData = null;
+        if (inv.counterpartSchemeCode) {
+          counterpartData = await getMFData(inv.counterpartSchemeCode);
+        }
+        
+        const index = updatedInvs.findIndex(i => i.id === inv.id);
+        if (index !== -1) {
+          updatedInvs[index] = {
+            ...updatedInvs[index],
+            navHistory: mainData?.data || updatedInvs[index].navHistory,
+            counterpartNavHistory: counterpartData?.data || updatedInvs[index].counterpartNavHistory,
+            isLoading: false,
+            error: undefined
+          };
+        }
+      } catch (err) {
+        console.error(`Failed to fetch NAV for ${inv.name}`, err);
+        const index = updatedInvs.findIndex(i => i.id === inv.id);
+        if (index !== -1) {
+          updatedInvs[index] = { ...updatedInvs[index], isLoading: false, error: "Failed to fetch NAV data" };
+        }
+      }
+    }));
+
+    setInvestments(updatedInvs);
+    setIsProcessing(false);
+  };
+
+  useEffect(() => {
+    fetchMissingNavs(investments);
+  }, [investments.map(i => i.isLoading).join(',')]);
+
+  const refreshNavs = async () => {
+    setIsProcessing(true);
+    
+    const updatedInvestments = await Promise.all(investments.map(async (inv) => {
+      if (inv.source === 'CUSTOM') return inv; // Skip custom funds
+      
+      try {
+        const mainData = await getMFData(inv.schemeCode);
+        let counterpartData = null;
+        if (inv.counterpartSchemeCode) {
+          counterpartData = await getMFData(inv.counterpartSchemeCode);
+        }
+        
+        return {
+          ...inv,
+          navHistory: mainData?.data || inv.navHistory,
+          counterpartNavHistory: counterpartData?.data || inv.counterpartNavHistory,
+          isLoading: false,
+          error: undefined
+        };
+      } catch (err) {
+        console.error(`Failed to refresh NAV for ${inv.name}`, err);
+        return { ...inv, error: "Failed to refresh NAV data" };
+      }
+    }));
+    
+    setInvestments(updatedInvestments);
+    setIsProcessing(false);
+  };
+
   // Get unique tags
   const allTags = useMemo(() => {
     const tags = new Set<string>();
@@ -269,6 +424,12 @@ const App: React.FC = () => {
                   <List size={16} className="mr-2"/> Portfolio
               </button>
               <button 
+                onClick={() => setCurrentTab('FUND_DETAILS')}
+                className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'FUND_DETAILS' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                  <FileText size={16} className="mr-2"/> Fund Details
+              </button>
+              <button 
                 onClick={() => setCurrentTab('ADD_FUND')}
                 className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'ADD_FUND' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
@@ -279,6 +440,12 @@ const App: React.FC = () => {
                 className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'ADD_CUSTOM' ? 'bg-white text-purple-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                   <Database size={16} className="mr-2"/> Add Manual Fund Details
+              </button>
+              <button 
+                onClick={() => setCurrentTab('TAX_HARVESTING')}
+                className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'TAX_HARVESTING' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                  <Calculator size={16} className="mr-2"/> Tax Harvesting
               </button>
           </nav>
 
@@ -518,6 +685,14 @@ const App: React.FC = () => {
                         <h3 className="text-xl font-bold text-slate-900">Your Portfolio</h3>
                         <p className="text-sm text-slate-500">Manage all your investments</p>
                     </div>
+                    <button 
+                        onClick={refreshNavs}
+                        disabled={isProcessing}
+                        className="flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        <RefreshCw size={16} className={`mr-2 ${isProcessing ? 'animate-spin' : ''}`} />
+                        {isProcessing ? 'Refreshing...' : 'Refresh All NAVs'}
+                    </button>
                 </div>
 
                 {/* TAG FILTER BAR */}
@@ -553,7 +728,61 @@ const App: React.FC = () => {
                  <InvestmentTable 
                     investments={filteredInvestments} 
                     onRemove={removeInvestment}
+                    onRefresh={refreshSingleNav}
+                    processingId={processingId}
                  />
+             </section>
+        )}
+
+        {/* VIEW: FUND DETAILS */}
+        {currentTab === 'FUND_DETAILS' && (
+             <section className="animate-in fade-in slide-in-from-right-4 duration-300 max-w-5xl mx-auto">
+                  <div className="mb-6 flex justify-between items-center">
+                    <div>
+                        <h3 className="text-xl font-bold text-slate-900">Fund Details</h3>
+                        <p className="text-sm text-slate-500">View performance and tax breakdown for each individual fund</p>
+                    </div>
+                    <button 
+                        onClick={refreshNavs}
+                        disabled={isProcessing}
+                        className="flex items-center px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        <RefreshCw size={16} className={`mr-2 ${isProcessing ? 'animate-spin' : ''}`} />
+                        {isProcessing ? 'Refreshing...' : 'Refresh All NAVs'}
+                    </button>
+                 </div>
+
+                 {/* TAG FILTER BAR */}
+                 {allTags.length > 0 && (
+                     <div className="flex flex-wrap gap-2 mb-6">
+                         <button
+                             onClick={() => setSelectedTag(null)}
+                             className={`px-3 py-1 text-xs font-semibold rounded-full border transition-all ${
+                                 !selectedTag 
+                                 ? 'bg-slate-800 text-white border-slate-800' 
+                                 : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+                             }`}
+                         >
+                             All
+                         </button>
+                         {allTags.map(tag => (
+                             <button
+                                 key={tag}
+                                 onClick={() => setSelectedTag(prev => prev === tag ? null : tag)}
+                                 className={`px-3 py-1 text-xs font-semibold rounded-full border transition-all flex items-center ${
+                                     selectedTag === tag
+                                     ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                                     : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-200 hover:text-emerald-700'
+                                 }`}
+                             >
+                                 <Tag size={10} className="mr-1.5" />
+                                 {tag}
+                             </button>
+                         ))}
+                     </div>
+                 )}
+
+                 <FundPerformance investments={filteredInvestments} />
              </section>
         )}
 
@@ -576,6 +805,17 @@ const App: React.FC = () => {
                     <p className="text-sm text-slate-500">Manually track private funds, real estate, or unlisted assets</p>
                  </div>
                  <CustomFundForm onAdd={handleAddCustomFund} />
+             </section>
+        )}
+
+        {/* VIEW: TAX HARVESTING */}
+        {currentTab === 'TAX_HARVESTING' && (
+             <section className="animate-in fade-in slide-in-from-right-4 duration-300 max-w-5xl mx-auto">
+                  <div className="mb-6">
+                    <h3 className="text-xl font-bold text-slate-900">Tax Harvesting</h3>
+                    <p className="text-sm text-slate-500">Optimize your tax liability by booking LTCG and losses</p>
+                 </div>
+                 <TaxHarvesting investments={investments} />
              </section>
         )}
 

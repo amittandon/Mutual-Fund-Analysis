@@ -19,11 +19,32 @@ export interface MFData {
   }[];
 }
 
+export const DEAD_FUND_MAPPING: Record<string, MFScheme> = {
+  '149153': { schemeCode: '151034', schemeName: 'HSBC Midcap Fund - Regular Growth' },
+  '149154': { schemeCode: '151036', schemeName: 'HSBC Midcap Fund - Direct Growth' },
+  '149152': { schemeCode: '151033', schemeName: 'HSBC Midcap Fund - Regular IDCW' },
+  '149155': { schemeCode: '151035', schemeName: 'HSBC Midcap Fund - Direct IDCW' },
+  // L&T Midcap Fund (old codes before HSBC acquisition)
+  '113247': { schemeCode: '151034', schemeName: 'HSBC Midcap Fund - Regular Growth' },
+  '118834': { schemeCode: '151036', schemeName: 'HSBC Midcap Fund - Direct Growth' },
+  '113248': { schemeCode: '151033', schemeName: 'HSBC Midcap Fund - Regular IDCW' },
+  '118835': { schemeCode: '151035', schemeName: 'HSBC Midcap Fund - Direct IDCW' },
+};
+
 export const searchMF = async (query: string): Promise<MFScheme[]> => {
   try {
     const res = await fetch(`https://api.mfapi.in/mf/search?q=${query}`);
     const data = await res.json();
-    return Array.isArray(data) ? data : [];
+    if (!Array.isArray(data)) return [];
+    
+    // Map dead funds to their active counterparts
+    return data.map((scheme: any) => {
+      const codeStr = String(scheme.schemeCode);
+      if (DEAD_FUND_MAPPING[codeStr]) {
+        return DEAD_FUND_MAPPING[codeStr];
+      }
+      return scheme;
+    });
   } catch (e) {
     console.error("Search failed", e);
     return [];
@@ -49,11 +70,13 @@ export const isDirectPlan = (name: string): boolean => {
 
 // New Helper: Intelligently find the best Direct Growth match for a raw query
 export const findBestMatchingScheme = async (rawQuery: string): Promise<MFScheme | null> => {
-  let results = await searchMF(rawQuery);
+  // Try with hyphens replaced by spaces first, as the API is sensitive to them
+  const initialQuery = rawQuery.replace(/-/g, ' ').replace(/\s\s+/g, ' ').trim();
+  let results = await searchMF(initialQuery);
   
   // Retry Strategy 1: Clean up common noise words if exact match failed
   if (!results || results.length === 0) {
-      const cleaned = rawQuery
+      const cleaned = initialQuery
         .replace(/Mid ?Cap/gi, '')
         .replace(/Large ?Cap/gi, '')
         .replace(/Small ?Cap/gi, '')
@@ -66,11 +89,10 @@ export const findBestMatchingScheme = async (rawQuery: string): Promise<MFScheme
         .replace(/Growth/gi, '')
         .replace(/Direct/gi, '')
         .replace(/Regular/gi, '')
-        .replace(/-/g, ' ')
         .replace(/\s\s+/g, ' ')
         .trim();
       
-      if (cleaned.length > 2 && cleaned !== rawQuery.trim()) {
+      if (cleaned.length > 2 && cleaned !== initialQuery) {
            results = await searchMF(cleaned);
       }
   }
