@@ -14,7 +14,7 @@ import { RedemptionHistory } from './components/RedemptionHistory';
 import { EditInvestmentModal } from './components/EditInvestmentModal';
 import { FundManager } from './components/FundManager';
 import { Investment, InvestmentType, NAVData, Redemption } from './types';
-import { getMFData, isDirectPlan, MFScheme, DEAD_FUND_MAPPING, downsampleNAVData } from './services/mfApiService';
+import { getMFData, isDirectPlan, MFScheme, downsampleNAVData } from './services/mfApiService';
 import { generateBacktestData, formatCurrency, calculatePortfolioStats, parseISODate, getLatestValidNav } from './utils/financials';
 import { Info, FilterX, AlertCircle, BarChart3, PieChart, Download, Upload, Wallet, TrendingDown, TrendingUp, Activity, ShieldCheck, Tag, LayoutDashboard, List, PlusCircle, Database, Calculator, FileText, RefreshCw, LogOut, X, ArrowRightLeft } from 'lucide-react';
 
@@ -97,26 +97,6 @@ const App: React.FC = () => {
         updated.navHistory = downsampleNAVData(inv.navHistory, importantDates);
         if (inv.counterpartNavHistory && inv.counterpartNavHistory.length > 0) {
           updated.counterpartNavHistory = downsampleNAVData(inv.counterpartNavHistory, importantDates);
-        }
-      }
-
-      // Check main scheme
-      const codeStr = String(inv.schemeCode);
-      if (DEAD_FUND_MAPPING[codeStr]) {
-        updated.schemeCode = DEAD_FUND_MAPPING[codeStr].schemeCode;
-        updated.name = DEAD_FUND_MAPPING[codeStr].schemeName;
-        updated.navHistory = []; // Clear history to force refresh
-        needsRefresh = true;
-      }
-
-      // Check counterpart scheme
-      if (inv.counterpartSchemeCode) {
-        const cpCodeStr = String(inv.counterpartSchemeCode);
-        if (DEAD_FUND_MAPPING[cpCodeStr]) {
-          updated.counterpartSchemeCode = DEAD_FUND_MAPPING[cpCodeStr].schemeCode;
-          updated.counterpartName = DEAD_FUND_MAPPING[cpCodeStr].schemeName;
-          updated.counterpartNavHistory = []; // Clear history to force refresh
-          needsRefresh = true;
         }
       }
 

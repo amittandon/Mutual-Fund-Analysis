@@ -19,72 +19,103 @@ export interface MFData {
   }[];
 }
 
-export const DEAD_FUND_MAPPING: Record<string, MFScheme> = {
-  '149153': { schemeCode: '151034', schemeName: 'HSBC Midcap Fund - Regular Growth' },
-  '149154': { schemeCode: '151036', schemeName: 'HSBC Midcap Fund - Direct Growth' },
-  '149152': { schemeCode: '151033', schemeName: 'HSBC Midcap Fund - Regular IDCW' },
-  '149155': { schemeCode: '151035', schemeName: 'HSBC Midcap Fund - Direct IDCW' },
-  // L&T Midcap Fund (old codes before HSBC acquisition)
-  '113247': { schemeCode: '151034', schemeName: 'HSBC Midcap Fund - Regular Growth' },
-  '118834': { schemeCode: '151036', schemeName: 'HSBC Midcap Fund - Direct Growth' },
-  '113248': { schemeCode: '151033', schemeName: 'HSBC Midcap Fund - Regular IDCW' },
-  '118835': { schemeCode: '151035', schemeName: 'HSBC Midcap Fund - Direct IDCW' },
-  // L&T Flexi Cap / Equity Fund
-  '102012': { schemeCode: '151042', schemeName: 'HSBC Flexi Cap Fund - Regular Growth' },
-  '119104': { schemeCode: '151044', schemeName: 'HSBC Flexi Cap Fund - Direct Growth' },
-  // L&T Emerging Businesses
-  '128951': { schemeCode: '151026', schemeName: 'HSBC Emerging Businesses Fund - Regular Growth' },
-  '128952': { schemeCode: '151028', schemeName: 'HSBC Emerging Businesses Fund - Direct Growth' },
-  // L&T Tax Advantage
-  '102033': { schemeCode: '151022', schemeName: 'HSBC ELSS Tax Saver Fund - Regular Growth' },
-  '119109': { schemeCode: '151024', schemeName: 'HSBC ELSS Tax Saver Fund - Direct Growth' },
-};
-
-export const searchMF = async (query: string): Promise<MFScheme[]> => {
+export const searchMF = async (query: string, retries = 3): Promise<MFScheme[]> => {
   try {
     const cleanedQuery = String(query).trim();
     if (!cleanedQuery) return [];
 
-    const res = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(cleanedQuery)}`, {
-      referrerPolicy: 'no-referrer',
-      cache: 'no-cache'
-    });
-    
-    if (!res.ok) {
-      console.error(`Search failed with status: ${res.status}`);
-      return [];
-    }
-    const data = await res.json();
-    if (!Array.isArray(data)) return [];
-    
-    // Map dead funds to their active counterparts
-    return data.map((scheme: any) => {
-      const codeStr = String(scheme.schemeCode).trim();
-      if (DEAD_FUND_MAPPING[codeStr]) {
-        return DEAD_FUND_MAPPING[codeStr];
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const res = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(cleanedQuery)}`, {
+          referrerPolicy: 'no-referrer',
+          cache: 'no-cache'
+        });
+        
+        if (res.status === 429 || res.status >= 500) {
+          const waitTime = Math.pow(2, i) * 1000;
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue;
+        }
+
+        if (!res.ok) {
+          if (i < retries) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+          return [];
+        }
+
+        const data = await res.json();
+        if (!Array.isArray(data)) {
+          if (i < retries) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            continue;
+          }
+          return [];
+        }
+        
+        return data.map((scheme: any) => ({
+          ...scheme,
+          schemeCode: String(scheme.schemeCode).trim()
+        }));
+      } catch (e) {
+        if (i === retries) throw e;
+        const waitTime = Math.pow(2, i) * 1000;
+        await new Promise(resolve => setTimeout(resolve, waitTime));
       }
-      return {
-        ...scheme,
-        schemeCode: codeStr // Ensure it's a string
-      };
-    });
+    }
+    return [];
   } catch (e) {
     console.error("Search failed", e);
     return [];
   }
 };
 
-export const LEGACY_STITCH_MAP: Record<string, string[]> = {
-  '151034': ['149153', '113247', '102013'], // HSBC Midcap Reg (Current <- Interim <- L&T <- DBS Chola)
-  '151036': ['149154', '118834'],           // HSBC Midcap Dir
-  '151033': ['149152', '113248', '102014'], // HSBC Midcap Reg IDCW
-  '151035': ['149155', '118835'],           // HSBC Midcap Dir IDCW
-  '151042': ['102012'],                     // HSBC Flexi Reg
-  '151044': ['119104'],                     // HSBC Flexi Dir
-  '151026': ['128951'],                     // HSBC Emerging Reg
-  '151028': ['128952'],                     // HSBC Emerging Dir
-  '151022': ['102033'],                     // HSBC ELSS Reg
-  '151024': ['119109'],                     // HSBC ELSS Dir
+export const getMFData = async (code: string, retries = 4): Promise<MFData | null> => {
+  const cleanedCode = String(code).trim();
+  if (!cleanedCode || cleanedCode === 'undefined' || cleanedCode === 'null') {
+    console.error("Invalid scheme code provided to getMFData:", code);
+    return null;
+  }
+
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(`https://api.mfapi.in/mf/${cleanedCode}`, {
+        referrerPolicy: 'no-referrer',
+        cache: 'no-cache'
+      });
+
+      // Handle rate limiting (429) and server errors (5xx) with exponential backoff
+      if (res.status === 429 || res.status >= 500) {
+        const waitTime = Math.pow(2, i) * 1000;
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+
+      if (!res.ok) {
+        if (i < retries) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
+        }
+        return null;
+      }
+
+      const data = await res.json();
+      if (!data || !data.data || !Array.isArray(data.data)) {
+        if (i < retries) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          continue;
+        }
+        return null;
+      }
+      return data;
+    } catch (e) {
+      if (i === retries) return null;
+      const waitTime = Math.pow(2, i) * 1000;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+  }
+  return null;
 };
 
 // Helper to parse any date format ("dd-mm-yyyy" or "yyyy-mm-dd") to Date object
@@ -105,79 +136,6 @@ const parseAnyDate = (dateStr: string): Date => {
     return new Date(p2, p1 - 1, p0);
   }
   return new Date(NaN);
-};
-
-export const getMFData = async (code: string, retries = 2): Promise<MFData | null> => {
-  const cleanedCode = String(code).trim();
-  if (!cleanedCode || cleanedCode === 'undefined' || cleanedCode === 'null') {
-    console.error("Invalid scheme code provided to getMFData:", code);
-    return null;
-  }
-
-  const fetchSingle = async (c: string): Promise<MFData | null> => {
-    for (let i = 0; i <= retries; i++) {
-      try {
-        const res = await fetch(`https://api.mfapi.in/mf/${c}`, {
-          referrerPolicy: 'no-referrer',
-          cache: 'no-cache'
-        });
-
-        if (res.status === 429) {
-          const waitTime = Math.pow(2, i) * 1000;
-          await new Promise(resolve => setTimeout(resolve, waitTime));
-          continue;
-        }
-
-        if (!res.ok) {
-          if (i < retries) continue;
-          return null;
-        }
-
-        const data = await res.json();
-        if (!data || !data.data || !Array.isArray(data.data)) {
-          if (i < retries) continue;
-          return null;
-        }
-        return data;
-      } catch (e) {
-        if (i === retries) return null;
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
-    }
-    return null;
-  };
-
-  const mainData = await fetchSingle(cleanedCode);
-  if (!mainData) return null;
-
-  // Stitching Logic
-  if (LEGACY_STITCH_MAP[cleanedCode]) {
-    let stitchedHistory = [...mainData.data];
-    const existingDates = new Set(stitchedHistory.map(d => d.date));
-
-    for (const legacyCode of LEGACY_STITCH_MAP[cleanedCode]) {
-      const legacyData = await fetchSingle(legacyCode);
-      if (legacyData && legacyData.data) {
-        // Only add dates that don't exist in the current set
-        for (const entry of legacyData.data) {
-          if (!existingDates.has(entry.date)) {
-            stitchedHistory.push(entry);
-            existingDates.add(entry.date);
-          }
-        }
-      }
-    }
-
-    // Re-sort by date descending (latest first)
-    stitchedHistory.sort((a, b) => parseAnyDate(b.date).getTime() - parseAnyDate(a.date).getTime());
-    
-    return {
-      ...mainData,
-      data: stitchedHistory
-    };
-  }
-
-  return mainData;
 };
 
 /**

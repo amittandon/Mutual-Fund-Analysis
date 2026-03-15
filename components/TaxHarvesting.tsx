@@ -193,7 +193,8 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
     }>();
 
     filteredActions.forEach(a => {
-      const key = `${a.fundName}-${a.type}`;
+      const tag = a.tags?.[0] || 'Untagged';
+      const key = `${a.fundName}-${a.type}-${tag}`;
       if (!map.has(key)) {
         map.set(key, { 
           fundName: a.fundName,
@@ -201,7 +202,7 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
           gain: a.gain,
           value: a.value,
           units: a.units,
-          tags: [...(a.tags || [])],
+          tags: [tag],
           lotCount: 1 
         });
       } else {
@@ -210,9 +211,6 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
         existing.value += a.value;
         existing.units += a.units;
         existing.lotCount += 1;
-        a.tags?.forEach(t => {
-          if (!existing.tags.includes(t)) existing.tags.push(t);
-        });
       }
     });
 
@@ -225,14 +223,14 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
   }, [summaries, selectedTag]);
 
   const handleExportCSV = () => {
-    const headers = ['Fund Name', 'Type', 'Units', 'Gain/Loss', 'Current Value', 'Tags'];
+    const headers = ['Fund Name', 'Type', 'Units', 'Gain/Loss', 'Current Value', 'Tag'];
     const rows = consolidatedActions.map(a => [
       `"${a.fundName}"`,
       a.type,
       a.units.toFixed(3),
       a.gain.toFixed(2),
       a.value.toFixed(2),
-      `"${a.tags.join(', ')}"`
+      `"${a.tags[0]}"`
     ]);
 
     const csvContent = [
@@ -329,6 +327,7 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
                     <thead className="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
                       <tr>
                         <th className="px-4 py-3">Fund Name</th>
+                        {!selectedTag && <th className="px-4 py-3">Tag</th>}
                         <th className="px-4 py-3">Type</th>
                         <th className="px-4 py-3 text-right">Total Loss</th>
                         <th className="px-4 py-3 text-right">Withdrawal Value</th>
@@ -344,6 +343,13 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
                               <div className="font-medium text-slate-900">{action.fundName}</div>
                               <div className="text-[10px] text-slate-400">Consolidated from {action.lotCount} lots</div>
                             </td>
+                            {!selectedTag && (
+                              <td className="px-4 py-3">
+                                <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                                  {action.tags[0]}
+                                </span>
+                              </td>
+                            )}
                             <td className="px-4 py-3">
                               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${action.type === 'STCL' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
                                 {action.type}
@@ -356,7 +362,7 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
                     </tbody>
                     <tfoot className="bg-slate-50/50 font-bold border-t border-slate-100">
                       <tr>
-                        <td colSpan={2} className="px-4 py-3 text-slate-500 text-xs uppercase">Total Potential Loss Offset</td>
+                        <td colSpan={!selectedTag ? 3 : 2} className="px-4 py-3 text-slate-500 text-xs uppercase">Total Potential Loss Offset</td>
                         <td className="px-4 py-3 text-right text-red-600 font-mono">
                           {formatCurrency(consolidatedActions.filter(a => a.gain < -0.01).reduce((sum, a) => sum + a.gain, 0))}
                         </td>
@@ -403,6 +409,7 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
                     <thead className="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
                       <tr>
                         <th className="px-4 py-3">Fund Name</th>
+                        {!selectedTag && <th className="px-4 py-3">Tag</th>}
                         <th className="px-4 py-3 text-right">Total Gain</th>
                         <th className="px-4 py-3 text-right">Withdrawal Value</th>
                       </tr>
@@ -417,6 +424,13 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
                               <div className="font-medium text-slate-900">{action.fundName}</div>
                               <div className="text-[10px] text-slate-400">Consolidated from {action.lotCount} lots</div>
                             </td>
+                            {!selectedTag && (
+                              <td className="px-4 py-3">
+                                <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
+                                  {action.tags[0]}
+                                </span>
+                              </td>
+                            )}
                             <td className="px-4 py-3 text-right font-bold text-emerald-600 font-mono">+{formatCurrency(action.gain)}</td>
                             <td className="px-4 py-3 text-right text-slate-600 font-medium font-mono">{formatCurrency(action.value)}</td>
                           </tr>
@@ -424,7 +438,7 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
                     </tbody>
                     <tfoot className="bg-slate-50/50 font-bold border-t border-slate-100">
                       <tr>
-                        <td className="px-4 py-3 text-slate-500 text-xs uppercase">Total Harvestable Gain</td>
+                        <td colSpan={!selectedTag ? 2 : 1} className="px-4 py-3 text-slate-500 text-xs uppercase">Total Harvestable Gain</td>
                         <td className="px-4 py-3 text-right text-emerald-600 font-mono">
                           {formatCurrency(consolidatedActions.filter(a => a.type === 'LTCG' && a.gain > 0.01).reduce((sum, a) => sum + a.gain, 0))}
                         </td>
