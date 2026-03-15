@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { Investment } from '../types';
 import { getInstallments, formatCurrency } from '../utils/financials';
-import { Calculator, AlertTriangle, CheckCircle2, TrendingDown, TrendingUp, Info } from 'lucide-react';
+import { Calculator, AlertTriangle, CheckCircle2, TrendingDown, TrendingUp, Info, Download, Tag, X } from 'lucide-react';
 
 interface TaxHarvestingProps {
   investments: Investment[];
@@ -25,10 +25,29 @@ interface TaxSummary {
   }[];
 }
 
+interface HarvestingAction {
+  fundName: string;
+  date: Date;
+  type: 'LTCG' | 'LTCL' | 'STCL' | 'STCG';
+  gain: number;
+  value: number;
+  units: number;
+  tags?: string[];
+}
+
 export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => {
   const [expandedTag, setExpandedTag] = useState<string | null>(null);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
-  const summaries = useMemo(() => {
+  const allTags = useMemo(() => {
+    const tags = new Set<string>();
+    investments.forEach(inv => {
+      inv.tags?.forEach(tag => tags.add(tag));
+    });
+    return Array.from(tags).sort();
+  }, [investments]);
+
+  const { summaries } = useMemo(() => {
     const tagMap = new Map<string, TaxSummary>();
 
     const getOrCreateSummary = (tag: string) => {
@@ -133,8 +152,104 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
       return summary;
     });
 
-    return results.sort((a, b) => a.tag.localeCompare(b.tag));
+    return { 
+      summaries: results.sort((a, b) => a.tag.localeCompare(b.tag))
+    };
   }, [investments]);
+
+  const filteredActions = useMemo(() => {
+    const actions: HarvestingAction[] = [];
+    
+    summaries.forEach(s => {
+      // If no tag is selected, we want to include everything from every summary
+      // If a tag is selected, we only want the portions belonging to that tag
+      if (!selectedTag || s.tag === selectedTag) {
+        s.recommendations.forEach(r => {
+          actions.push({
+            fundName: r.fundName,
+            date: r.date,
+            type: r.type,
+            gain: r.gain,
+            value: r.currentValue,
+            units: r.units,
+            tags: [s.tag]
+          });
+        });
+      }
+    });
+
+    return actions;
+  }, [summaries, selectedTag]);
+
+  const consolidatedActions = useMemo(() => {
+    const map = new Map<string, { 
+      fundName: string; 
+      type: 'LTCG' | 'LTCL' | 'STCL' | 'STCG'; 
+      gain: number; 
+      value: number; 
+      units: number;
+      tags: string[];
+      lotCount: number;
+    }>();
+
+    filteredActions.forEach(a => {
+      const key = `${a.fundName}-${a.type}`;
+      if (!map.has(key)) {
+        map.set(key, { 
+          fundName: a.fundName,
+          type: a.type,
+          gain: a.gain,
+          value: a.value,
+          units: a.units,
+          tags: [...(a.tags || [])],
+          lotCount: 1 
+        });
+      } else {
+        const existing = map.get(key)!;
+        existing.gain += a.gain;
+        existing.value += a.value;
+        existing.units += a.units;
+        existing.lotCount += 1;
+        a.tags?.forEach(t => {
+          if (!existing.tags.includes(t)) existing.tags.push(t);
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [filteredActions]);
+
+  const filteredSummaries = useMemo(() => {
+    if (!selectedTag) return summaries;
+    return summaries.filter(s => s.tag === selectedTag);
+  }, [summaries, selectedTag]);
+
+  const handleExportCSV = () => {
+    const headers = ['Fund Name', 'Type', 'Units', 'Gain/Loss', 'Current Value', 'Tags'];
+    const rows = consolidatedActions.map(a => [
+      `"${a.fundName}"`,
+      a.type,
+      a.units.toFixed(3),
+      a.gain.toFixed(2),
+      a.value.toFixed(2),
+      `"${a.tags.join(', ')}"`
+    ]);
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(r => r.join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `tax_harvesting_${selectedTag || 'all'}_${new Date().toISOString().split('T')[0]}.csv`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
 
   if (investments.length === 0) {
     return (
@@ -147,6 +262,200 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
 
   return (
     <div className="space-y-6">
+      {/* TAG FILTER BAR */}
+      {allTags.length > 0 && (
+        <div className="flex flex-wrap gap-2 mb-2">
+          <button
+            onClick={() => setSelectedTag(null)}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-full border transition-all ${
+              !selectedTag 
+              ? 'bg-slate-800 text-white border-slate-800' 
+              : 'bg-white text-slate-600 border-slate-200 hover:border-slate-300'
+            }`}
+          >
+            All Tags
+          </button>
+          {allTags.map(tag => (
+            <button
+              key={tag}
+              onClick={() => setSelectedTag(prev => prev === tag ? null : tag)}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-full border transition-all flex items-center ${
+                selectedTag === tag
+                ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-200 hover:text-emerald-700'
+              }`}
+            >
+              <Tag size={12} className="mr-1.5" />
+              {tag}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* TAX HARVESTING SUMMARY SECTION */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden animate-in fade-in slide-in-from-top-4 duration-500">
+        <div className="p-6 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <div className="bg-emerald-100 p-2 rounded-lg">
+                <Calculator className="h-5 w-5 text-emerald-600" />
+              </div>
+              <h2 className="text-xl font-bold text-slate-900">Tax Harvesting Summary</h2>
+            </div>
+            <p className="text-sm text-slate-500">
+              Follow these steps to optimize your tax liability {selectedTag ? `for tag: ${selectedTag}` : 'for the current financial year'}.
+            </p>
+          </div>
+          <button
+            onClick={handleExportCSV}
+            className="flex items-center gap-2 px-4 py-2 bg-slate-900 text-white rounded-xl text-sm font-semibold hover:bg-slate-800 transition-all shadow-sm"
+          >
+            <Download size={16} />
+            Export CSV
+          </button>
+        </div>
+
+        <div className="p-6 space-y-8">
+          {/* STEP 1: BOOK LOSSES */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-slate-900 text-white text-xs font-bold">1</span>
+              <h3 className="font-bold text-slate-800">Book Losses to Offset Gains (STCL & LTCL)</h3>
+            </div>
+            
+            {consolidatedActions.filter(a => a.gain < -0.01).length > 0 ? (
+                <div className="overflow-hidden border border-slate-100 rounded-xl">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+                      <tr>
+                        <th className="px-4 py-3">Fund Name</th>
+                        <th className="px-4 py-3">Type</th>
+                        <th className="px-4 py-3 text-right">Total Loss</th>
+                        <th className="px-4 py-3 text-right">Withdrawal Value</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {consolidatedActions
+                        .filter(a => a.gain < -0.01)
+                        .sort((a, b) => a.gain - b.gain)
+                        .map((action, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="font-medium text-slate-900">{action.fundName}</div>
+                              <div className="text-[10px] text-slate-400">Consolidated from {action.lotCount} lots</div>
+                            </td>
+                            <td className="px-4 py-3">
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${action.type === 'STCL' ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                                {action.type}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 text-right font-bold text-red-600 font-mono">{formatCurrency(action.gain)}</td>
+                            <td className="px-4 py-3 text-right text-slate-600 font-medium font-mono">{formatCurrency(action.value)}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                    <tfoot className="bg-slate-50/50 font-bold border-t border-slate-100">
+                      <tr>
+                        <td colSpan={2} className="px-4 py-3 text-slate-500 text-xs uppercase">Total Potential Loss Offset</td>
+                        <td className="px-4 py-3 text-right text-red-600 font-mono">
+                          {formatCurrency(consolidatedActions.filter(a => a.gain < -0.01).reduce((sum, a) => sum + a.gain, 0))}
+                        </td>
+                        <td className="px-4 py-3 text-right text-slate-900 font-mono">
+                          {formatCurrency(consolidatedActions.filter(a => a.gain < -0.01).reduce((sum, a) => sum + a.value, 0))}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+            ) : (
+              <div className="p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-center">
+                <p className="text-sm text-slate-400">No loss-making investments found to harvest.</p>
+              </div>
+            )}
+          </div>
+
+          {/* STEP 2: BOOK TAX-FREE LTCG */}
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <span className="flex items-center justify-center w-6 h-6 rounded-full bg-slate-900 text-white text-xs font-bold">2</span>
+              <h3 className="font-bold text-slate-800">Book Tax-Free Long Term Gains (LTCG)</h3>
+            </div>
+            
+            {consolidatedActions.filter(a => a.type === 'LTCG' && a.gain > 0.01).length > 0 ? (
+              <div className="space-y-4">
+                <div className="p-4 bg-emerald-50 border border-emerald-100 rounded-xl flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <TrendingUp className="text-emerald-600" size={20} />
+                    <div>
+                      <p className="text-sm font-bold text-emerald-900">Total Harvestable LTCG</p>
+                      <p className="text-xs text-emerald-700">Book up to ₹1.25L + any losses booked above</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-xl font-bold text-emerald-600">
+                      {formatCurrency(consolidatedActions.filter(a => a.type === 'LTCG' && a.gain > 0.01).reduce((sum, a) => sum + a.gain, 0))}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="overflow-hidden border border-slate-100 rounded-xl">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 text-slate-500 font-semibold text-xs uppercase tracking-wider">
+                      <tr>
+                        <th className="px-4 py-3">Fund Name</th>
+                        <th className="px-4 py-3 text-right">Total Gain</th>
+                        <th className="px-4 py-3 text-right">Withdrawal Value</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50">
+                      {consolidatedActions
+                        .filter(a => a.type === 'LTCG' && a.gain > 0.01)
+                        .sort((a, b) => b.gain - a.gain)
+                        .map((action, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="font-medium text-slate-900">{action.fundName}</div>
+                              <div className="text-[10px] text-slate-400">Consolidated from {action.lotCount} lots</div>
+                            </td>
+                            <td className="px-4 py-3 text-right font-bold text-emerald-600 font-mono">+{formatCurrency(action.gain)}</td>
+                            <td className="px-4 py-3 text-right text-slate-600 font-medium font-mono">{formatCurrency(action.value)}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                    <tfoot className="bg-slate-50/50 font-bold border-t border-slate-100">
+                      <tr>
+                        <td className="px-4 py-3 text-slate-500 text-xs uppercase">Total Harvestable Gain</td>
+                        <td className="px-4 py-3 text-right text-emerald-600 font-mono">
+                          {formatCurrency(consolidatedActions.filter(a => a.type === 'LTCG' && a.gain > 0.01).reduce((sum, a) => sum + a.gain, 0))}
+                        </td>
+                        <td className="px-4 py-3 text-right text-slate-900 font-mono">
+                          {formatCurrency(consolidatedActions.filter(a => a.type === 'LTCG' && a.gain > 0.01).reduce((sum, a) => sum + a.value, 0))}
+                        </td>
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              </div>
+            ) : (
+              <div className="p-4 bg-slate-50 rounded-xl border border-dashed border-slate-200 text-center">
+                <p className="text-sm text-slate-400">No LTCG opportunities found.</p>
+              </div>
+            )}
+          </div>
+
+          {/* WARNING: STCG */}
+          <div className="p-4 bg-amber-50 border border-amber-100 rounded-xl flex items-start gap-3">
+            <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+            <div className="text-xs text-amber-800 leading-relaxed">
+              <p className="font-bold mb-1">Important Note on STCG:</p>
+              <p>
+                Short Term Capital Gains (STCG) are taxed at 20%. It is generally <strong>not recommended</strong> to book STCG unless you have significant STCL (Short Term Capital Loss) to offset it. Re-investing immediately after booking STCG will incur tax without the benefit of the tax-free limit available for LTCG.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-start">
         <Info className="text-emerald-600 mr-3 mt-0.5 flex-shrink-0" size={20} />
         <div className="text-sm text-emerald-800">
@@ -161,7 +470,7 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
       </div>
 
       <div className="grid grid-cols-1 gap-6">
-        {summaries.map(summary => {
+        {filteredSummaries.map(summary => {
           const isExpanded = expandedTag === summary.tag;
           const maxTaxFreeLTCG = 125000 + summary.eligibleLossToBook;
           const ltcgRemaining = Math.max(0, maxTaxFreeLTCG - summary.ltcg);
