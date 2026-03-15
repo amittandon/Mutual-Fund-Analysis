@@ -15,11 +15,15 @@ export const FundPerformance: React.FC<FundPerformanceProps> = ({ investments })
       const installments = getInstallments(inv);
       
       let totalInvested = 0;
+      let totalRedeemed = 0;
       let currentValue = 0;
       let stcg = 0;
       let stcl = 0;
       let ltcg = 0;
       let ltcl = 0;
+
+      const stats = simulateInvestment(inv, inv.navHistory);
+      totalRedeemed = stats.totalRedeemed;
 
       installments.forEach(inst => {
         totalInvested += inst.investedAmount;
@@ -52,9 +56,10 @@ export const FundPerformance: React.FC<FundPerformanceProps> = ({ investments })
         impact,
         tags: inv.tags,
         totalInvested,
+        totalRedeemed,
         currentValue,
-        totalGain,
-        gainPercentage,
+        totalGain: currentValue + totalRedeemed - totalInvested,
+        gainPercentage: totalInvested > 0 ? ((currentValue + totalRedeemed - totalInvested) / totalInvested) * 100 : 0,
         stcg,
         stcl,
         ltcg,
@@ -133,10 +138,15 @@ export const FundPerformance: React.FC<FundPerformanceProps> = ({ investments })
             </div>
           </div>
 
-          <div className="p-6 bg-slate-50/50 grid grid-cols-1 md:grid-cols-3 gap-6">
+          <div className="p-6 bg-slate-50/50 grid grid-cols-1 md:grid-cols-4 gap-6">
             <div className="space-y-1">
               <p className="text-sm text-slate-500 font-medium">Invested Amount</p>
               <p className="text-lg font-semibold text-slate-800">{formatCurrency(fund.totalInvested)}</p>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-sm text-slate-500 font-medium">Redeemed Amount</p>
+              <p className="text-lg font-semibold text-amber-600">{formatCurrency(fund.totalRedeemed)}</p>
             </div>
             
             <div className="space-y-1">
@@ -206,7 +216,13 @@ export const FundPerformance: React.FC<FundPerformanceProps> = ({ investments })
                       {fund.installments.map((inst, idx) => (
                         <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
                           <td className="px-4 py-3 font-medium text-slate-900">
-                            {inst.date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            {(() => {
+                              try {
+                                return inst.date.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
+                              } catch (e) {
+                                return 'Invalid Date';
+                              }
+                            })()}
                           </td>
                           <td className="px-4 py-3 text-right text-slate-600">
                             {formatCurrency(inst.investedAmount)}

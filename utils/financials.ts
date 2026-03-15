@@ -2,23 +2,38 @@ import { Investment, ChartDataPoint, InvestmentType, NAVData, PortfolioMetrics }
 
 // Helper to parse "dd-mm-yyyy" (API format) to Date object (Local Midnight)
 const parseAPIDate = (dateStr: string): Date => {
-  const [d, m, y] = dateStr.split('-').map(Number);
+  if (!dateStr || typeof dateStr !== 'string') return new Date(NaN);
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return new Date(NaN);
+  const [d, m, y] = parts.map(Number);
   return new Date(y, m - 1, d);
 };
 
 // Helper to parse "yyyy-mm-dd" (Input format) to Date object (Local Midnight)
 const parseISODate = (dateStr: string): Date => {
-  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!dateStr || typeof dateStr !== 'string') return new Date(NaN);
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return new Date(NaN);
+  const [y, m, d] = parts.map(Number);
   return new Date(y, m - 1, d);
 };
 
+const isValidDate = (d: Date) => d instanceof Date && !isNaN(d.getTime());
+
 // Helper to get NAV avoiding mutation and handling gaps
 const getNAV = (history: NAVData[], targetDate: Date, mode: 'PURCHASE' | 'VALUATION'): number | null => {
-  if (!history || history.length === 0) return null;
+  if (!history || history.length === 0 || !isValidDate(targetDate)) return null;
 
   const targetTime = targetDate.getTime();
-  const earliestDate = parseAPIDate(history[history.length - 1].date);
-  const latestDate = parseAPIDate(history[0].date);
+  const earliestEntry = history[history.length - 1];
+  const latestEntry = history[0];
+  
+  if (!earliestEntry || !latestEntry) return null;
+
+  const earliestDate = parseAPIDate(earliestEntry.date);
+  const latestDate = parseAPIDate(latestEntry.date);
+  
+  if (!isValidDate(earliestDate) || !isValidDate(latestDate)) return null;
   
   if (mode === 'PURCHASE') {
     // If target is more than 31 days before the earliest known date, return null
@@ -29,13 +44,15 @@ const getNAV = (history: NAVData[], targetDate: Date, mode: 'PURCHASE' | 'VALUAT
     // Find first NAV >= targetDate (or closest future)
     for (let i = history.length - 1; i >= 0; i--) {
       const d = parseAPIDate(history[i].date);
-      if (d.getTime() >= targetTime) {
-        return parseFloat(history[i].nav);
+      if (isValidDate(d) && d.getTime() >= targetTime) {
+        const nav = parseFloat(history[i].nav);
+        return isNaN(nav) ? null : nav;
       }
     }
     // If target is after last known date, return last known
     if (targetTime > latestDate.getTime()) {
-        return parseFloat(history[0].nav);
+        const nav = parseFloat(history[0].nav);
+        return isNaN(nav) ? null : nav;
     }
     return null;
   } else {
@@ -46,8 +63,9 @@ const getNAV = (history: NAVData[], targetDate: Date, mode: 'PURCHASE' | 'VALUAT
 
     for (const entry of history) {
       const d = parseAPIDate(entry.date);
-      if (d.getTime() <= targetTime) {
-        return parseFloat(entry.nav);
+      if (isValidDate(d) && d.getTime() <= targetTime) {
+        const nav = parseFloat(entry.nav);
+        return isNaN(nav) ? null : nav;
       }
     }
     return null;
@@ -65,9 +83,10 @@ export const simulateInvestment = (inv: Investment, navHistory: NAVData[] | unde
     const cashFlows: CashFlow[] = [];
     let units = 0;
     let totalInvested = 0;
+    let totalRedeemed = 0;
     
     if (!navHistory || navHistory.length === 0) {
-        return { units: 0, totalInvested: 0, cashFlows: [], currentValue: 0 };
+        return { units: 0, totalInvested: 0, totalRedeemed: 0, cashFlows: [], currentValue: 0 };
     }
 
     const startDate = parseISODate(inv.startDate);
@@ -75,57 +94,86 @@ export const simulateInvestment = (inv: Investment, navHistory: NAVData[] | unde
     const now = new Date();
     now.setHours(0,0,0,0);
 
-    // Date Simulation Logic
+    // 1. Generate all events (Investments and Redemptions)
+    const events: { date: Date, type: 'BUY' | 'SELL', amount?: number, units?: number, redemptionType?: string }[] = [];
+
     if (inv.type === InvestmentType.LUMPSUM) {
-        const nav = getNAV(navHistory, startDate, 'PURCHASE');
-        if (nav) {
-            units += inv.amount / nav;
-            totalInvested += inv.amount;
-            cashFlows.push({ date: startDate, amount: -inv.amount });
-        }
+        events.push({ date: startDate, type: 'BUY', amount: inv.amount });
     } else {
-        // SIP Logic matching generateBacktestData
         const startDay = startDate.getDate();
         let cursorDate = new Date(startDate);
-        // Normalize cursor to start of month for iteration safety
         cursorDate.setDate(1);
 
         while (cursorDate <= now) {
             const year = cursorDate.getFullYear();
             const month = cursorDate.getMonth();
-
-            // Determine strict payment date for this month
             const maxDayInMonth = new Date(year, month + 1, 0).getDate();
             const actualDay = Math.min(startDay, maxDayInMonth);
             const paymentDate = new Date(year, month, actualDay);
 
-            // Validation
-            const isStarted = paymentDate.getTime() >= startDate.getTime();
-            const isNotFuture = paymentDate <= now;
-            const isBeforeEnd = endDate ? paymentDate <= endDate : true;
-
-            if (isStarted && isNotFuture && isBeforeEnd) {
-                 const nav = getNAV(navHistory, paymentDate, 'PURCHASE');
-                 if (nav) {
-                     units += inv.amount / nav;
-                     totalInvested += inv.amount;
-                     cashFlows.push({ date: paymentDate, amount: -inv.amount });
-                 }
+            if (paymentDate >= startDate && paymentDate <= now && (!endDate || paymentDate <= endDate)) {
+                events.push({ date: paymentDate, type: 'BUY', amount: inv.amount });
             }
-            
-            // Move to next month
             cursorDate.setMonth(cursorDate.getMonth() + 1);
         }
     }
 
+    // Add Redemptions
+    if (inv.redemptions) {
+        inv.redemptions.forEach(r => {
+            const rDate = parseISODate(r.date);
+            if (rDate >= startDate && rDate <= now) {
+                events.push({ 
+                    date: rDate, 
+                    type: 'SELL', 
+                    amount: r.amount, 
+                    units: r.units, 
+                    redemptionType: r.type 
+                });
+            }
+        });
+    }
+
+    // 2. Sort events chronologically
+    events.sort((a, b) => a.date.getTime() - b.date.getTime());
+
+    // 3. Process events
+    events.forEach(event => {
+        const nav = getNAV(navHistory, event.date, 'PURCHASE');
+        if (!nav) return;
+
+        if (event.type === 'BUY') {
+            const buyUnits = event.amount! / nav;
+            units += buyUnits;
+            totalInvested += event.amount!;
+            cashFlows.push({ date: event.date, amount: -event.amount! });
+        } else {
+            let sellUnits = 0;
+            if (event.redemptionType === 'ALL') {
+                sellUnits = units;
+            } else if (event.redemptionType === 'UNITS') {
+                sellUnits = Math.min(event.units || 0, units);
+            } else if (event.redemptionType === 'AMOUNT') {
+                sellUnits = Math.min((event.amount || 0) / nav, units);
+            }
+
+            if (sellUnits > 0) {
+                const sellAmount = sellUnits * nav;
+                units -= sellUnits;
+                totalRedeemed += sellAmount;
+                cashFlows.push({ date: event.date, amount: sellAmount });
+            }
+        }
+    });
+
     // Calculate Current Value
-    // Use the latest NAV available in history (usually [0] is latest desc)
     const currentNav = parseFloat(navHistory[0].nav);
     const currentValue = units * currentNav;
 
     return {
         units,
         totalInvested,
+        totalRedeemed,
         cashFlows,
         currentValue
     };
@@ -152,10 +200,16 @@ export const getInstallments = (inv: Investment): Installment[] => {
     }
 
     const startDate = parseISODate(inv.startDate);
+    if (!isValidDate(startDate)) return [];
+
     const endDate = inv.endDate ? parseISODate(inv.endDate) : null;
     const now = new Date();
     now.setHours(0,0,0,0);
-    const currentNav = parseFloat(navHistory[0].nav);
+    
+    const latestNavEntry = navHistory[0];
+    if (!latestNavEntry) return [];
+    const currentNav = parseFloat(latestNavEntry.nav);
+    if (isNaN(currentNav)) return [];
 
     if (inv.type === InvestmentType.LUMPSUM) {
         const nav = getNAV(navHistory, startDate, 'PURCHASE');
@@ -180,7 +234,11 @@ export const getInstallments = (inv: Investment): Installment[] => {
         let cursorDate = new Date(startDate);
         cursorDate.setDate(1);
 
-        while (cursorDate <= now) {
+        let iterations = 0;
+        const MAX_ITERATIONS = 600;
+
+        while (cursorDate <= now && iterations < MAX_ITERATIONS) {
+            iterations++;
             const year = cursorDate.getFullYear();
             const month = cursorDate.getMonth();
 
@@ -216,7 +274,42 @@ export const getInstallments = (inv: Investment): Installment[] => {
         }
     }
 
-    return installments;
+    // Handle Redemptions (FIFO)
+    if (inv.redemptions && inv.redemptions.length > 0) {
+        const sortedRedemptions = [...inv.redemptions].sort((a, b) => 
+            parseISODate(a.date).getTime() - parseISODate(b.date).getTime()
+        );
+
+        sortedRedemptions.forEach(r => {
+            const rDate = parseISODate(r.date);
+            const nav = getNAV(navHistory, rDate, 'PURCHASE');
+            if (!nav) return;
+
+            let unitsToRedeem = 0;
+            if (r.type === 'ALL') {
+                unitsToRedeem = installments.reduce((acc, inst) => acc + inst.units, 0);
+            } else if (r.type === 'UNITS') {
+                unitsToRedeem = r.units || 0;
+            } else if (r.type === 'AMOUNT') {
+                unitsToRedeem = (r.amount || 0) / nav;
+            }
+
+            // FIFO: Reduce units from oldest installments available at redemption date
+            for (let i = 0; i < installments.length && unitsToRedeem > 0; i++) {
+                const inst = installments[i];
+                if (inst.date <= rDate) {
+                    const redeemFromThis = Math.min(inst.units, unitsToRedeem);
+                    inst.units -= redeemFromThis;
+                    inst.investedAmount = inst.units * inst.purchaseNav;
+                    inst.currentValue = inst.units * currentNav;
+                    inst.gain = inst.currentValue - inst.investedAmount;
+                    unitsToRedeem -= redeemFromThis;
+                }
+            }
+        });
+    }
+
+    return installments.filter(inst => inst.units > 0.0001);
 };
 
 export const generateBacktestData = (
@@ -232,8 +325,16 @@ export const generateBacktestData = (
 
   if (activeInvestments.length === 0) return [];
 
-  const startDates = activeInvestments.map(i => parseISODate(i.startDate).getTime());
-  const minDate = new Date(Math.min(...startDates));
+  const startDates = activeInvestments
+    .map(i => parseISODate(i.startDate).getTime())
+    .filter(t => !isNaN(t));
+  
+  if (startDates.length === 0) return [];
+
+  const minTime = Math.min(...startDates);
+  if (!isFinite(minTime)) return [];
+
+  const minDate = new Date(minTime);
   minDate.setDate(1);
   minDate.setHours(0,0,0,0);
 
@@ -256,14 +357,53 @@ export const generateBacktestData = (
   const hasBenchmark = benchmarkHistory && benchmarkHistory.length > 0;
 
   let cursorDate = new Date(minDate);
+  
+  // Safety break for infinite loops
+  let iterations = 0;
+  const MAX_ITERATIONS = 600; // 50 years
 
-  while (cursorDate <= now) {
+  while (cursorDate <= now && iterations < MAX_ITERATIONS) {
+    iterations++;
     const year = cursorDate.getFullYear();
     const month = cursorDate.getMonth();
     let monthEndDate = new Date(year, month + 1, 0); 
     if (monthEndDate > now) monthEndDate = new Date(now);
 
     portfolio.forEach(inv => {
+      // Handle Redemptions in this month
+      if (inv.redemptions) {
+        inv.redemptions.forEach(r => {
+          const rDate = parseISODate(r.date);
+          if (rDate.getMonth() === month && rDate.getFullYear() === year && rDate <= now) {
+             // Direct Scenario
+             const historyD = inv.isDirect ? inv.navHistory : inv.counterpartNavHistory;
+             if (historyD?.length) {
+               const nav = getNAV(historyD, rDate, 'PURCHASE');
+               if (nav) {
+                 let sellUnits = 0;
+                 if (r.type === 'ALL') sellUnits = inv.unitsDirect;
+                 else if (r.type === 'UNITS') sellUnits = Math.min(r.units || 0, inv.unitsDirect);
+                 else if (r.type === 'AMOUNT') sellUnits = Math.min((r.amount || 0) / nav, inv.unitsDirect);
+                 inv.unitsDirect -= sellUnits;
+                 inv.totalInvested -= (sellUnits * nav); 
+               }
+             }
+             // Regular Scenario
+             const historyR = !inv.isDirect ? inv.navHistory : inv.counterpartNavHistory;
+             if (historyR?.length) {
+               const nav = getNAV(historyR, rDate, 'PURCHASE');
+               if (nav) {
+                 let sellUnits = 0;
+                 if (r.type === 'ALL') sellUnits = inv.unitsRegular;
+                 else if (r.type === 'UNITS') sellUnits = Math.min(r.units || 0, inv.unitsRegular);
+                 else if (r.type === 'AMOUNT') sellUnits = Math.min((r.amount || 0) / nav, inv.unitsRegular);
+                 inv.unitsRegular -= sellUnits;
+               }
+             }
+          }
+        });
+      }
+
       let paymentDate: Date | null = null;
       
       if (inv.type === InvestmentType.SIP) {
@@ -382,8 +522,15 @@ export const generateBacktestData = (
     }
 
     if (totalInvested > 0) {
+        let monthLabel = 'Unknown';
+        try {
+            monthLabel = monthEndDate.toLocaleDateString('en-US', { month: 'short', year: '2-digit' });
+        } catch (e) {
+            console.error("Invalid monthEndDate", monthEndDate);
+        }
+
         dataPoints.push({
-            month: monthEndDate.toLocaleDateString('en-US', { month: 'short', year: '2-digit' }),
+            month: monthLabel,
             directValue: Math.round(totalDirectVal),
             regularValue: Math.round(totalRegularVal),
             actualValue: Math.round(totalActualVal),
@@ -410,6 +557,7 @@ export const formatCurrency = (amount: number) => {
 
 // Newton-Raphson method to calculate XIRR
 export const calculateXIRR = (transactions: CashFlow[], currentValue: number, valuationDate: Date): number => {
+  if (isNaN(currentValue) || !isFinite(currentValue)) currentValue = 0;
   const flows = [...transactions, { date: valuationDate, amount: currentValue }];
   
   if (flows.length < 2) return 0;
@@ -422,24 +570,28 @@ export const calculateXIRR = (transactions: CashFlow[], currentValue: number, va
     let fDerivative = 0;
     
     for (const flow of flows) {
+      if (!isValidDate(flow.date)) continue;
       const days = (flow.date.getTime() - flows[0].date.getTime()) / (1000 * 60 * 60 * 24);
       const years = days / 365;
       
-      const r = Math.max(rate, -0.99); 
+      const r = Math.max(rate, -0.999); 
       
       const pvFactor = Math.pow(1 + r, years);
+      if (!isFinite(pvFactor) || pvFactor === 0) continue;
+      
       fValue += flow.amount / pvFactor;
       fDerivative -= (years * flow.amount) / (pvFactor * (1 + r));
     }
     
-    if (Math.abs(fValue) < 1) break; // Precision threshold
+    if (Math.abs(fDerivative) < 1e-9) break; // Avoid division by zero
+    if (Math.abs(fValue) < 1e-2) break; // Precision threshold
     
     const newRate = rate - fValue / fDerivative;
-    if (isNaN(newRate) || !isFinite(newRate)) return 0; 
+    if (isNaN(newRate) || !isFinite(newRate)) break; 
     rate = newRate;
   }
   
-  return rate * 100; // Return percentage
+  return isFinite(rate) ? rate * 100 : 0; // Return percentage
 };
 
 // Calculate Max Drawdown from a series of values
@@ -535,6 +687,7 @@ export const calculatePortfolioStats = (
 ): PortfolioMetrics => {
     
     let totalInvested = 0;
+    let totalRedeemed = 0;
     let actualValue = 0;
     let counterpartValue = 0;
     const allCashFlows: CashFlow[] = [];
@@ -546,25 +699,20 @@ export const calculatePortfolioStats = (
         const stats = simulateInvestment(inv, history);
         
         totalInvested += stats.totalInvested;
+        totalRedeemed += stats.totalRedeemed;
         actualValue += stats.currentValue;
         allCashFlows.push(...stats.cashFlows);
 
         // Counterpart Simulation: Use inv.counterpartNavHistory (The Other Fund)
-        // If counterpart data is missing, we can't calculate a comparison value, so we default to 0 (or Actual, to avoid showing false loss).
-        // Defaulting to 0 makes Impact = Actual - 0 = Actual (Confusing). 
-        // Let's only calculate counterpart value if history exists.
         if (inv.counterpartNavHistory && inv.counterpartNavHistory.length > 0) {
              const counterpartStats = simulateInvestment(inv, inv.counterpartNavHistory);
              counterpartValue += counterpartStats.currentValue;
         } else {
-             // If comparison is missing, assume neutral impact for this fund
              counterpartValue += stats.currentValue;
         }
     });
 
     // Net Impact (Actual - Counterpart)
-    // If I have Direct, Actual > Counterpart (Regular). Impact is Positive (Saved money).
-    // If I have Regular, Actual < Counterpart (Direct). Impact is Negative (Lost money).
     const netImpact = actualValue - counterpartValue;
 
     // Approximate duration for yearly impact
@@ -580,8 +728,9 @@ export const calculatePortfolioStats = (
     const xirr = calculateXIRR(allCashFlows, actualValue, new Date());
     
     // Absolute Return on Actual
+    // (CurrentValue + TotalRedeemed - TotalInvested) / TotalInvested
     const absoluteReturn = totalInvested > 0 
-        ? ((actualValue - totalInvested) / totalInvested) * 100 
+        ? ((actualValue + totalRedeemed - totalInvested) / totalInvested) * 100 
         : 0;
 
     // Max Drawdown based on Actual Portfolio curve
@@ -641,6 +790,7 @@ export const calculatePortfolioStats = (
 
     return {
         totalInvested,
+        totalRedeemed,
         currentValue: actualValue, // Updated to return Actual Portfolio Value
         regularValue: 0, // Deprecated in UI
         actualValue,
@@ -672,9 +822,30 @@ export const calculateFundRatios = (investments: Investment[], benchmarkHistory:
         // Add to aggregate portfolio cashflows
         allCashFlows.push(...stats.cashFlows);
 
+        // Track value curve for max drawdown
+        // We need a common set of dates. Let's use the NAV dates of the fund.
+        const fundValues: number[] = [];
+        history.forEach(h => {
+            const d = parseAPIDate(h.date);
+            if (d >= startDate) {
+                const nav = parseFloat(h.nav);
+                // We need to know the units at this date
+                // This is complex because units change over time (SIP)
+                // For simplicity, let's just use the final units for the fund's own drawdown
+                // But for portfolio drawdown, we need the actual simulated value at each date.
+            }
+        });
+
         const xirr = calculateXIRR(stats.cashFlows, stats.currentValue, new Date());
         const volatility = calculateVolatility(history, startDate);
         
+        // Calculate Fund's Max Drawdown
+        const navValues = history
+            .filter(h => parseAPIDate(h.date) >= startDate)
+            .map(h => parseFloat(h.nav))
+            .reverse(); // Ascending order
+        const maxDrawdown = calculateMaxDrawdown(navValues);
+
         let beta = 0;
         let alpha = 0;
 
@@ -705,9 +876,11 @@ export const calculateFundRatios = (investments: Investment[], benchmarkHistory:
         return {
             name: inv.name,
             invested: stats.totalInvested,
+            totalRedeemed: stats.totalRedeemed,
             currentValue: stats.currentValue,
             xirr,
             volatility,
+            maxDrawdown,
             beta,
             alpha
         };
@@ -715,6 +888,7 @@ export const calculateFundRatios = (investments: Investment[], benchmarkHistory:
 
     // Recalculate Portfolio Aggregates (Weighted)
     const totalInvested = funds.reduce((acc, f) => acc + f.invested, 0);
+    const totalRedeemed = funds.reduce((acc, f) => acc + (f.totalRedeemed || 0), 0);
     const totalValue = funds.reduce((acc, f) => acc + f.currentValue, 0);
     
     // FIX 1: Calculate TRUE Portfolio XIRR using aggregate cashflows
@@ -724,14 +898,17 @@ export const calculateFundRatios = (investments: Investment[], benchmarkHistory:
     const weightedVol = totalValue > 0 ? funds.reduce((acc, f) => acc + (f.volatility * (f.currentValue/totalValue)), 0) : 0;
     const weightedBeta = totalValue > 0 ? funds.reduce((acc, f) => acc + (f.beta * (f.currentValue/totalValue)), 0) : 0;
     const weightedAlpha = totalValue > 0 ? funds.reduce((acc, f) => acc + (f.alpha * (f.currentValue/totalValue)), 0) : 0;
+    const weightedMaxDD = totalValue > 0 ? funds.reduce((acc, f) => acc + (f.maxDrawdown * (f.currentValue/totalValue)), 0) : 0;
 
     return {
         funds,
         portfolio: {
             invested: totalInvested,
+            totalRedeemed,
             currentValue: totalValue,
             xirr: portfolioXirr, // Using True XIRR
             volatility: weightedVol,
+            maxDrawdown: weightedMaxDD,
             beta: weightedBeta,
             alpha: weightedAlpha
         }

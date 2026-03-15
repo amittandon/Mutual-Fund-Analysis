@@ -12,7 +12,7 @@ interface AddInvestmentFormProps {
     startDate: string,
     endDate: string | undefined,
     tags: string[]
-  ) => void;
+  ) => Promise<void>;
   isProcessing: boolean;
 }
 
@@ -90,9 +90,14 @@ export const AddInvestmentForm: React.FC<AddInvestmentFormProps> = ({ onAdd, isP
 
     setIsSearching(true);
     searchTimeout.current = setTimeout(async () => {
-      const data = await searchMF(query);
-      setResults(data.slice(0, 10));
-      setIsSearching(false);
+      try {
+        const data = await searchMF(query);
+        setResults(data.slice(0, 10));
+      } catch (err) {
+        console.error("Search failed", err);
+      } finally {
+        setIsSearching(false);
+      }
     }, 500);
 
     return () => {
@@ -110,9 +115,14 @@ export const AddInvestmentForm: React.FC<AddInvestmentFormProps> = ({ onAdd, isP
 
     setIsFixSearching(true);
     fixSearchTimeout.current = setTimeout(async () => {
-      const data = await searchMF(fixQuery);
-      setFixResults(data.slice(0, 10));
-      setIsFixSearching(false);
+      try {
+        const data = await searchMF(fixQuery);
+        setFixResults(data.slice(0, 10));
+      } catch (err) {
+        console.error("Fix search failed", err);
+      } finally {
+        setIsFixSearching(false);
+      }
     }, 500);
 
     return () => {
@@ -178,7 +188,7 @@ export const AddInvestmentForm: React.FC<AddInvestmentFormProps> = ({ onAdd, isP
     setQuery(''); 
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     const investedScheme = investedIn === 'DIRECT' ? directScheme : regularScheme;
@@ -187,14 +197,18 @@ export const AddInvestmentForm: React.FC<AddInvestmentFormProps> = ({ onAdd, isP
     if (!investedScheme || !amount || !startDate) return;
     
     if (endDate && startDate > endDate) {
-        alert("End date must be after start date");
+        console.error("End date must be after start date");
         return;
     }
 
     const tagList = tags.split(',').map(t => t.trim()).filter(t => t.length > 0);
 
-    onAdd(investedScheme, counterpartScheme, type, parseFloat(amount), startDate, endDate || undefined, tagList);
-    resetForm();
+    try {
+      await onAdd(investedScheme, counterpartScheme, type, parseFloat(amount), startDate, endDate || undefined, tagList);
+      resetForm();
+    } catch (err) {
+      console.error("Failed to add investment:", err);
+    }
   };
 
   // --- BULK MODE LOGIC ---
@@ -224,6 +238,9 @@ export const AddInvestmentForm: React.FC<AddInvestmentFormProps> = ({ onAdd, isP
           setIsFixSearching(true);
           searchMF(row.name).then(res => {
               setFixResults(res.slice(0, 10));
+          }).catch(err => {
+              console.error("Manual fix search failed", err);
+          }).finally(() => {
               setIsFixSearching(false);
           });
       }
@@ -284,7 +301,7 @@ export const AddInvestmentForm: React.FC<AddInvestmentFormProps> = ({ onAdd, isP
             
             const rowTags = row.tags ? row.tags.split(',').map(t => t.trim()).filter(t => t) : [];
 
-            onAdd(
+            await onAdd(
                 investedScheme, 
                 counterpartScheme, 
                 row.type, 
@@ -305,17 +322,21 @@ export const AddInvestmentForm: React.FC<AddInvestmentFormProps> = ({ onAdd, isP
   };
 
   const processBulkRows = async () => {
-    setBulkProcessing(true);
-    
-    // Filter rows that are IDLE or ERROR (allow retrying errors)
-    const rowsToProcess = bulkRows.filter(r => (r.status === 'IDLE' || r.status === 'ERROR') && r.name && r.amount && r.startDate);
+    try {
+      setBulkProcessing(true);
+      
+      // Filter rows that are IDLE or ERROR (allow retrying errors)
+      const rowsToProcess = bulkRows.filter(r => (r.status === 'IDLE' || r.status === 'ERROR') && r.name && r.amount && r.startDate);
 
-    for (const row of rowsToProcess) {
-        await processSingleBulkRow(row.id);
-        await new Promise(r => setTimeout(r, 200)); // Rate limit
+      for (const row of rowsToProcess) {
+          await processSingleBulkRow(row.id);
+          await new Promise(r => setTimeout(r, 200)); // Rate limit
+      }
+    } catch (err) {
+      console.error("Bulk processing failed:", err);
+    } finally {
+      setBulkProcessing(false);
     }
-
-    setBulkProcessing(false);
 
     // Auto-clear successfull rows after a short delay
     setTimeout(() => {

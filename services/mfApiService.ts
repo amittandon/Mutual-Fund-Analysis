@@ -29,21 +29,44 @@ export const DEAD_FUND_MAPPING: Record<string, MFScheme> = {
   '118834': { schemeCode: '151036', schemeName: 'HSBC Midcap Fund - Direct Growth' },
   '113248': { schemeCode: '151033', schemeName: 'HSBC Midcap Fund - Regular IDCW' },
   '118835': { schemeCode: '151035', schemeName: 'HSBC Midcap Fund - Direct IDCW' },
+  // L&T Flexi Cap / Equity Fund
+  '102012': { schemeCode: '151042', schemeName: 'HSBC Flexi Cap Fund - Regular Growth' },
+  '119104': { schemeCode: '151044', schemeName: 'HSBC Flexi Cap Fund - Direct Growth' },
+  // L&T Emerging Businesses
+  '128951': { schemeCode: '151026', schemeName: 'HSBC Emerging Businesses Fund - Regular Growth' },
+  '128952': { schemeCode: '151028', schemeName: 'HSBC Emerging Businesses Fund - Direct Growth' },
+  // L&T Tax Advantage
+  '102033': { schemeCode: '151022', schemeName: 'HSBC ELSS Tax Saver Fund - Regular Growth' },
+  '119109': { schemeCode: '151024', schemeName: 'HSBC ELSS Tax Saver Fund - Direct Growth' },
 };
 
 export const searchMF = async (query: string): Promise<MFScheme[]> => {
   try {
-    const res = await fetch(`https://api.mfapi.in/mf/search?q=${query}`);
+    const cleanedQuery = String(query).trim();
+    if (!cleanedQuery) return [];
+
+    const res = await fetch(`https://api.mfapi.in/mf/search?q=${encodeURIComponent(cleanedQuery)}`, {
+      referrerPolicy: 'no-referrer',
+      cache: 'no-cache'
+    });
+    
+    if (!res.ok) {
+      console.error(`Search failed with status: ${res.status}`);
+      return [];
+    }
     const data = await res.json();
     if (!Array.isArray(data)) return [];
     
     // Map dead funds to their active counterparts
     return data.map((scheme: any) => {
-      const codeStr = String(scheme.schemeCode);
+      const codeStr = String(scheme.schemeCode).trim();
       if (DEAD_FUND_MAPPING[codeStr]) {
         return DEAD_FUND_MAPPING[codeStr];
       }
-      return scheme;
+      return {
+        ...scheme,
+        schemeCode: codeStr // Ensure it's a string
+      };
     });
   } catch (e) {
     console.error("Search failed", e);
@@ -51,16 +74,94 @@ export const searchMF = async (query: string): Promise<MFScheme[]> => {
   }
 };
 
-export const getMFData = async (code: string): Promise<MFData | null> => {
-  try {
-    const res = await fetch(`https://api.mfapi.in/mf/${code}`);
-    const data = await res.json();
-    if (!data.data || !Array.isArray(data.data)) return null;
-    return data;
-  } catch (e) {
-    console.error("Fetch data failed", e);
+export const LEGACY_STITCH_MAP: Record<string, string[]> = {
+  '151034': ['149153', '113247', '102013'], // HSBC Midcap Reg (Current <- Interim <- L&T <- DBS Chola)
+  '151036': ['149154', '118834'],           // HSBC Midcap Dir
+  '151033': ['149152', '113248', '102014'], // HSBC Midcap Reg IDCW
+  '151035': ['149155', '118835'],           // HSBC Midcap Dir IDCW
+  '151042': ['102012'],                     // HSBC Flexi Reg
+  '151044': ['119104'],                     // HSBC Flexi Dir
+  '151026': ['128951'],                     // HSBC Emerging Reg
+  '151028': ['128952'],                     // HSBC Emerging Dir
+  '151022': ['102033'],                     // HSBC ELSS Reg
+  '151024': ['119109'],                     // HSBC ELSS Dir
+};
+
+export const getMFData = async (code: string, retries = 2): Promise<MFData | null> => {
+  const cleanedCode = String(code).trim();
+  if (!cleanedCode || cleanedCode === 'undefined' || cleanedCode === 'null') {
+    console.error("Invalid scheme code provided to getMFData:", code);
     return null;
   }
+
+  const fetchSingle = async (c: string): Promise<MFData | null> => {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        const res = await fetch(`https://api.mfapi.in/mf/${c}`, {
+          referrerPolicy: 'no-referrer',
+          cache: 'no-cache'
+        });
+
+        if (res.status === 429) {
+          const waitTime = Math.pow(2, i) * 1000;
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          continue;
+        }
+
+        if (!res.ok) {
+          if (i < retries) continue;
+          return null;
+        }
+
+        const data = await res.json();
+        if (!data || !data.data || !Array.isArray(data.data)) {
+          if (i < retries) continue;
+          return null;
+        }
+        return data;
+      } catch (e) {
+        if (i === retries) return null;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+    return null;
+  };
+
+  const mainData = await fetchSingle(cleanedCode);
+  if (!mainData) return null;
+
+  // Stitching Logic
+  if (LEGACY_STITCH_MAP[cleanedCode]) {
+    let stitchedHistory = [...mainData.data];
+    const existingDates = new Set(stitchedHistory.map(d => d.date));
+
+    for (const legacyCode of LEGACY_STITCH_MAP[cleanedCode]) {
+      const legacyData = await fetchSingle(legacyCode);
+      if (legacyData && legacyData.data) {
+        // Only add dates that don't exist in the current set
+        for (const entry of legacyData.data) {
+          if (!existingDates.has(entry.date)) {
+            stitchedHistory.push(entry);
+            existingDates.add(entry.date);
+          }
+        }
+      }
+    }
+
+    // Re-sort by date descending (latest first)
+    const parseDate = (s: string) => {
+      const [d, m, y] = s.split('-').map(Number);
+      return new Date(y, m - 1, d).getTime();
+    };
+    stitchedHistory.sort((a, b) => parseDate(b.date) - parseDate(a.date));
+    
+    return {
+      ...mainData,
+      data: stitchedHistory
+    };
+  }
+
+  return mainData;
 };
 
 // Helper to check if a name looks like a Direct plan

@@ -9,10 +9,13 @@ import { BenchmarkSelector } from './components/BenchmarkSelector';
 import { AnalysisDashboard } from './components/AnalysisDashboard';
 import { TaxHarvesting } from './components/TaxHarvesting';
 import { FundPerformance } from './components/FundPerformance';
-import { Investment, InvestmentType, NAVData } from './types';
+import { RedemptionModal } from './components/RedemptionModal';
+import { RedemptionHistory } from './components/RedemptionHistory';
+import { EditInvestmentModal } from './components/EditInvestmentModal';
+import { Investment, InvestmentType, NAVData, Redemption } from './types';
 import { getMFData, isDirectPlan, MFScheme, DEAD_FUND_MAPPING } from './services/mfApiService';
 import { generateBacktestData, formatCurrency, calculatePortfolioStats } from './utils/financials';
-import { Info, FilterX, AlertCircle, BarChart3, PieChart, Download, Upload, Wallet, TrendingDown, TrendingUp, Activity, ShieldCheck, Tag, LayoutDashboard, List, PlusCircle, Database, Calculator, FileText, RefreshCw } from 'lucide-react';
+import { Info, FilterX, AlertCircle, BarChart3, PieChart, Download, Upload, Wallet, TrendingDown, TrendingUp, Activity, ShieldCheck, Tag, LayoutDashboard, List, PlusCircle, Database, Calculator, FileText, RefreshCw, LogOut, X } from 'lucide-react';
 
 const App: React.FC = () => {
   const [investments, setInvestments] = useState<Investment[]>([]);
@@ -20,9 +23,12 @@ const App: React.FC = () => {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [redemptionTarget, setRedemptionTarget] = useState<Investment | null>(null);
+  const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
   
   // Navigation State
-  const [currentTab, setCurrentTab] = useState<'DASHBOARD' | 'PORTFOLIO' | 'FUND_DETAILS' | 'ADD_FUND' | 'ADD_CUSTOM' | 'TAX_HARVESTING'>('DASHBOARD');
+  const [currentTab, setCurrentTab] = useState<'DASHBOARD' | 'PORTFOLIO' | 'FUND_DETAILS' | 'ADD_FUND' | 'ADD_CUSTOM' | 'TAX_HARVESTING' | 'REDEMPTIONS'>('DASHBOARD');
   const [analysisView, setAnalysisView] = useState<'CHART' | 'RATIOS'>('CHART');
   
   // Benchmark State
@@ -131,24 +137,41 @@ const App: React.FC = () => {
     if (!file) return;
 
     const reader = new FileReader();
+    reader.onerror = (e) => {
+      console.error("FileReader error", e);
+    };
     reader.onload = (e) => {
       try {
         const content = e.target?.result as string;
+        if (!content) throw new Error("File is empty");
+        
         const parsedData = JSON.parse(content);
         if (Array.isArray(parsedData)) {
-            const isValid = parsedData.every(item => item.id && item.amount);
-            if (isValid) {
-                // Ensure tags array exists for legacy imports
-                const sanitized = parsedData.map(i => ({ ...i, tags: i.tags || [] }));
+            // Basic validation
+            const validInvestments = parsedData.filter(item => item && typeof item === 'object' && item.id && item.name);
+            
+            if (validInvestments.length > 0) {
+                // Ensure tags array exists for legacy imports and sanitize
+                const sanitized = validInvestments.map(i => ({ 
+                    ...i, 
+                    tags: Array.isArray(i.tags) ? i.tags : [],
+                    amount: Number(i.amount) || 0,
+                    startDate: String(i.startDate || ''),
+                    endDate: i.endDate ? String(i.endDate) : undefined
+                }));
+                
                 const migrated = migrateInvestments(sanitized);
                 setInvestments(migrated);
+                setError(null);
             } else {
-                alert("Invalid portfolio file format.");
+                setError("The file does not contain valid portfolio data.");
             }
+        } else {
+            setError("Invalid file format. Expected a JSON array of investments.");
         }
       } catch (error) {
         console.error("Error parsing file", error);
-        alert("Failed to read portfolio file.");
+        setError("Failed to read portfolio file. Please ensure it is a valid JSON file.");
       }
     };
     reader.readAsText(file);
@@ -166,7 +189,8 @@ const App: React.FC = () => {
   ) => {
     const isDirect = isDirectPlan(investedScheme.schemeName);
     
-    // Create initial entry
+    // Create initial entry with isLoading=true
+    // The fetchMissingNavs useEffect will pick this up and fetch the data
     const newInvestment: Investment = {
       id: uuidv4(),
       source: 'API',
@@ -185,43 +209,7 @@ const App: React.FC = () => {
     };
 
     setInvestments(prev => [...prev, newInvestment]);
-    setIsProcessing(true);
     setCurrentTab('PORTFOLIO'); // Switch to portfolio after adding
-
-    try {
-      const mainData = await getMFData(investedScheme.schemeCode);
-      if (!mainData) throw new Error("Could not fetch NAV data for selected fund");
-
-      let counterpartData = null;
-      if (counterpartScheme) {
-        counterpartData = await getMFData(counterpartScheme.schemeCode);
-      }
-
-      setInvestments(prev => prev.map(inv => {
-        if (inv.id === newInvestment.id) {
-            return {
-                ...inv,
-                isLoading: false,
-                category: mainData.meta.scheme_category,
-                fundHouse: mainData.meta.fund_house,
-                navHistory: mainData.data,
-                counterpartNavHistory: counterpartData?.data || [],
-                error: !counterpartData ? "Comparison data unavailable" : undefined
-            };
-        }
-        return inv;
-      }));
-
-    } catch (err) {
-      console.error(err);
-      setInvestments(prev => prev.map(inv => 
-        inv.id === newInvestment.id 
-          ? { ...inv, isLoading: false, error: "Failed to fetch data." } 
-          : inv
-      ));
-    } finally {
-      setIsProcessing(false);
-    }
   };
 
   const handleAddCustomFund = (
@@ -259,8 +247,70 @@ const App: React.FC = () => {
     }
   };
 
+  const updateInvestment = async (id: string, updates: { 
+    name: string; 
+    schemeCode?: string; 
+    isDirect?: boolean; 
+    counterpartSchemeCode?: string | null;
+    source?: 'AMFI' | 'CUSTOM';
+  }) => {
+    const inv = investments.find(i => i.id === id);
+    if (!inv) return;
+
+    let navHistory = inv.navHistory;
+    
+    // If scheme changed, fetch new history
+    if (updates.schemeCode && updates.schemeCode !== inv.schemeCode) {
+      setProcessingId(id);
+      try {
+        const data = await getMFData(updates.schemeCode);
+        if (!data) throw new Error("No data returned from API");
+        navHistory = data.data;
+      } catch (error) {
+        console.error("Failed to fetch new fund data:", error);
+        setProcessingId(null);
+        return;
+      }
+      setProcessingId(null);
+    }
+
+    setInvestments(prev => prev.map(i => 
+      i.id === id ? { 
+        ...i, 
+        ...updates,
+        navHistory: navHistory,
+        isLoading: false
+      } : i
+    ));
+  };
+
+  const addRedemption = (investmentId: string, redemption: Redemption) => {
+    setInvestments(prev => prev.map(inv => {
+      if (inv.id === investmentId) {
+        return {
+          ...inv,
+          redemptions: [...(inv.redemptions || []), redemption]
+        };
+      }
+      return inv;
+    }));
+  };
+
+  const removeRedemption = (investmentId: string, redemptionId: string) => {
+    setInvestments(prev => prev.map(inv => {
+      if (inv.id === investmentId) {
+        return {
+          ...inv,
+          redemptions: (inv.redemptions || []).filter(r => r.id !== redemptionId)
+        };
+      }
+      return inv;
+    }));
+  };
+
   const refreshSingleNav = async (id: string) => {
     setProcessingId(id);
+    setError(null);
     const inv = investments.find(i => i.id === id);
     if (!inv || inv.source === 'CUSTOM') {
       setProcessingId(null);
@@ -269,6 +319,10 @@ const App: React.FC = () => {
 
     try {
       const mainData = await getMFData(inv.schemeCode);
+      if (!mainData || !mainData.data) {
+        throw new Error(`No data returned for ${inv.name}`);
+      }
+
       let counterpartData = null;
       if (inv.counterpartSchemeCode) {
         counterpartData = await getMFData(inv.counterpartSchemeCode);
@@ -278,6 +332,8 @@ const App: React.FC = () => {
         if (i.id === id) {
           return {
             ...i,
+            category: mainData?.meta?.scheme_category || i.category,
+            fundHouse: mainData?.meta?.fund_house || i.fundHouse,
             navHistory: mainData?.data || i.navHistory,
             counterpartNavHistory: counterpartData?.data || i.counterpartNavHistory,
             isLoading: false,
@@ -288,18 +344,23 @@ const App: React.FC = () => {
       }));
     } catch (err) {
       console.error(`Failed to refresh NAV for ${inv.name}`, err);
+      setError(`Failed to refresh data for ${inv.name}. The API might be down.`);
     }
     setProcessingId(null);
   };
 
+  const isFetchingRef = useRef(false);
+
   const fetchMissingNavs = async (invs: Investment[]) => {
+    if (isFetchingRef.current) return;
     const needingFetch = invs.filter(i => i.isLoading && i.source === 'API');
     if (needingFetch.length === 0) return;
 
+    isFetchingRef.current = true;
     setIsProcessing(true);
-    const updatedInvs = [...invs];
 
-    await Promise.all(needingFetch.map(async (inv) => {
+    // Process sequentially to avoid rate limits
+    for (const inv of needingFetch) {
       try {
         const mainData = await getMFData(inv.schemeCode);
         let counterpartData = null;
@@ -307,61 +368,112 @@ const App: React.FC = () => {
           counterpartData = await getMFData(inv.counterpartSchemeCode);
         }
         
-        const index = updatedInvs.findIndex(i => i.id === inv.id);
-        if (index !== -1) {
-          updatedInvs[index] = {
-            ...updatedInvs[index],
-            navHistory: mainData?.data || updatedInvs[index].navHistory,
-            counterpartNavHistory: counterpartData?.data || updatedInvs[index].counterpartNavHistory,
-            isLoading: false,
-            error: undefined
-          };
-        }
+        setInvestments(prev => {
+          const newInvs = [...prev];
+          const index = newInvs.findIndex(i => i.id === inv.id);
+          if (index !== -1) {
+            newInvs[index] = {
+              ...newInvs[index],
+              category: mainData?.meta?.scheme_category || newInvs[index].category,
+              fundHouse: mainData?.meta?.fund_house || newInvs[index].fundHouse,
+              navHistory: mainData?.data || newInvs[index].navHistory,
+              counterpartNavHistory: counterpartData?.data || newInvs[index].counterpartNavHistory,
+              isLoading: false,
+              error: mainData ? undefined : "Failed to fetch NAV data"
+            };
+          }
+          return newInvs;
+        });
+        // Small delay between requests
+        await new Promise(r => setTimeout(r, 200));
       } catch (err) {
         console.error(`Failed to fetch NAV for ${inv.name}`, err);
-        const index = updatedInvs.findIndex(i => i.id === inv.id);
-        if (index !== -1) {
-          updatedInvs[index] = { ...updatedInvs[index], isLoading: false, error: "Failed to fetch NAV data" };
-        }
+        setInvestments(prev => {
+          const newInvs = [...prev];
+          const index = newInvs.findIndex(i => i.id === inv.id);
+          if (index !== -1) {
+            newInvs[index] = { ...newInvs[index], isLoading: false, error: "Failed to fetch NAV data" };
+          }
+          return newInvs;
+        });
       }
-    }));
+    }
 
-    setInvestments(updatedInvs);
     setIsProcessing(false);
+    isFetchingRef.current = false;
   };
 
   useEffect(() => {
-    fetchMissingNavs(investments);
+    fetchMissingNavs(investments).catch(err => console.error("fetchMissingNavs error", err));
   }, [investments.map(i => i.isLoading).join(',')]);
 
   const refreshNavs = async () => {
-    setIsProcessing(true);
+    if (isProcessing) return;
     
-    const updatedInvestments = await Promise.all(investments.map(async (inv) => {
-      if (inv.source === 'CUSTOM') return inv; // Skip custom funds
+    try {
+      setIsProcessing(true);
+      setError(null);
       
-      try {
-        const mainData = await getMFData(inv.schemeCode);
-        let counterpartData = null;
-        if (inv.counterpartSchemeCode) {
-          counterpartData = await getMFData(inv.counterpartSchemeCode);
-        }
+      let errorCount = 0;
+      
+      // We iterate over a snapshot of the current investments
+      const currentInvs = [...investments];
+      
+      for (const inv of currentInvs) {
+        if (inv.source === 'CUSTOM') continue;
         
-        return {
-          ...inv,
-          navHistory: mainData?.data || inv.navHistory,
-          counterpartNavHistory: counterpartData?.data || inv.counterpartNavHistory,
-          isLoading: false,
-          error: undefined
-        };
-      } catch (err) {
-        console.error(`Failed to refresh NAV for ${inv.name}`, err);
-        return { ...inv, error: "Failed to refresh NAV data" };
+        // Mark this specific fund as loading in the UI
+        setInvestments(prev => prev.map(i => i.id === inv.id ? { ...i, isLoading: true } : i));
+
+        try {
+          const mainData = await getMFData(inv.schemeCode);
+          if (!mainData || !mainData.data) {
+            throw new Error(`No data returned for ${inv.name}`);
+          }
+
+          let counterpartData = null;
+          if (inv.counterpartSchemeCode) {
+            counterpartData = await getMFData(inv.counterpartSchemeCode);
+          }
+          
+          setInvestments(prev => prev.map(i => {
+            if (i.id === inv.id) {
+              return {
+                ...i,
+                category: mainData?.meta?.scheme_category || i.category,
+                fundHouse: mainData?.meta?.fund_house || i.fundHouse,
+                navHistory: mainData?.data || i.navHistory,
+                counterpartNavHistory: counterpartData?.data || i.counterpartNavHistory,
+                isLoading: false,
+                error: undefined
+              };
+            }
+            return i;
+          }));
+          
+          // Small delay between requests to avoid rate limits
+          await new Promise(r => setTimeout(r, 300));
+        } catch (err) {
+          console.error(`Failed to refresh NAV for ${inv.name}`, err);
+          errorCount++;
+          setInvestments(prev => prev.map(i => {
+            if (i.id === inv.id) {
+              return { ...i, isLoading: false, error: "Failed to refresh NAV data" };
+            }
+            return i;
+          }));
+        }
       }
-    }));
-    
-    setInvestments(updatedInvestments);
-    setIsProcessing(false);
+      
+      if (errorCount > 0) {
+        setError(`${errorCount} fund(s) failed to refresh. Please check the portfolio table for details.`);
+      }
+    } catch (err) {
+      console.error("Global refresh failed", err);
+      setError("Failed to refresh portfolio. Please try again later.");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // Get unique tags
@@ -408,6 +520,27 @@ const App: React.FC = () => {
 
   return (
     <Layout>
+      {/* Error Notification */}
+      {error && (
+        <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom-4 duration-300">
+          <div className="bg-red-600 text-white px-6 py-4 rounded-2xl shadow-2xl flex items-center gap-4 max-w-md border border-red-500/20">
+            <div className="bg-white/20 p-2 rounded-lg">
+              <AlertCircle size={20} />
+            </div>
+            <div className="flex-1">
+              <p className="text-sm font-bold">Something went wrong</p>
+              <p className="text-xs opacity-90 mt-0.5">{error}</p>
+            </div>
+            <button 
+              onClick={() => setError(null)}
+              className="p-1 hover:bg-white/10 rounded-lg transition-colors"
+            >
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* GLOBAL NAVIGATION */}
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center border-b border-slate-200 pb-2 mb-8 gap-4">
           <nav className="flex space-x-2 bg-slate-100 p-1 rounded-xl overflow-x-auto max-w-full">
@@ -446,6 +579,12 @@ const App: React.FC = () => {
                 className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'TAX_HARVESTING' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                   <Calculator size={16} className="mr-2"/> Tax Harvesting
+              </button>
+              <button 
+                onClick={() => setCurrentTab('REDEMPTIONS')}
+                className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'REDEMPTIONS' ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                  <LogOut size={16} className="mr-2"/> Redemptions
               </button>
           </nav>
 
@@ -561,13 +700,13 @@ const App: React.FC = () => {
                                                 vs {benchmarkScheme.schemeName}
                                             </span>
                                         </div>
-                                        <p className={`text-3xl font-bold ${stats.alpha! > 0 ? 'text-violet-600' : 'text-slate-600'}`}>
-                                            {stats.alpha! > 0 ? '+' : ''}{stats.alpha!.toFixed(2)}%
+                                        <p className={`text-3xl font-bold ${(stats.alpha ?? 0) > 0 ? 'text-violet-600' : 'text-slate-600'}`}>
+                                            {(stats.alpha ?? 0) > 0 ? '+' : ''}{(stats.alpha ?? 0).toFixed(2)}%
                                         </p>
                                     </div>
                                     <div className="mt-4 pt-4 border-t border-slate-50 text-xs flex justify-between items-center">
                                         <span className="text-slate-400">Beta (Volatility)</span>
-                                        <span className="font-bold text-slate-700">{stats.beta!.toFixed(2)}</span>
+                                        <span className="font-bold text-slate-700">{(stats.beta ?? 0).toFixed(2)}</span>
                                     </div>
                                 </>
                             ) : (
@@ -728,7 +867,9 @@ const App: React.FC = () => {
                  <InvestmentTable 
                     investments={filteredInvestments} 
                     onRemove={removeInvestment}
+                    onEdit={setEditingInvestment}
                     onRefresh={refreshSingleNav}
+                    onRedeem={setRedemptionTarget}
                     processingId={processingId}
                  />
              </section>
@@ -817,6 +958,36 @@ const App: React.FC = () => {
                  </div>
                  <TaxHarvesting investments={investments} />
              </section>
+        )}
+
+        {/* VIEW: REDEMPTIONS */}
+        {currentTab === 'REDEMPTIONS' && (
+             <section className="animate-in fade-in slide-in-from-right-4 duration-300 max-w-5xl mx-auto">
+                  <div className="mb-6">
+                    <h3 className="text-xl font-bold text-slate-900">Redemption History</h3>
+                    <p className="text-sm text-slate-500">View and manage your past withdrawals</p>
+                 </div>
+                 <RedemptionHistory 
+                    investments={investments} 
+                    onRemoveRedemption={removeRedemption}
+                 />
+             </section>
+        )}
+
+        {redemptionTarget && (
+          <RedemptionModal 
+            investment={redemptionTarget}
+            onClose={() => setRedemptionTarget(null)}
+            onAddRedemption={addRedemption}
+          />
+        )}
+
+        {editingInvestment && (
+          <EditInvestmentModal
+            investment={editingInvestment}
+            onClose={() => setEditingInvestment(null)}
+            onSave={updateInvestment}
+          />
         )}
 
       </div>

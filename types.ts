@@ -13,6 +13,14 @@ export interface GroundingSource {
   uri?: string;
 }
 
+export interface Redemption {
+  id: string;
+  date: string; // ISO Date string
+  amount?: number; // Amount to redeem
+  units?: number; // Units to redeem
+  type: 'AMOUNT' | 'UNITS' | 'ALL';
+}
+
 export interface Investment {
   id: string;
   schemeCode: string;
@@ -35,6 +43,7 @@ export interface Investment {
   endDate?: string; // ISO Date string (Optional)
   
   tags: string[]; 
+  redemptions?: Redemption[]; // Track redemptions
   
   isLoading: boolean;
   error?: string;
@@ -52,6 +61,7 @@ export interface ChartDataPoint {
 
 export interface PortfolioMetrics {
   totalInvested: number;
+  totalRedeemed: number;
   currentValue: number;
   regularValue: number; 
   actualValue: number;

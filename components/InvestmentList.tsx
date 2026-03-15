@@ -34,7 +34,7 @@ export const InvestmentList: React.FC<InvestmentListProps> = ({ investments, onR
     e.stopPropagation();
     if (editingId && editValues.amount && editValues.startDate) {
         if (editValues.endDate && editValues.startDate > editValues.endDate) {
-            alert("End date must be after start date");
+            console.error("End date must be after start date");
             return;
         }
       const tagList = editValues.tags.split(',').map(t => t.trim()).filter(t => t.length > 0);

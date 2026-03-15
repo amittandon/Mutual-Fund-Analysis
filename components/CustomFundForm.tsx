@@ -61,7 +61,7 @@ export const CustomFundForm: React.FC<CustomFundFormProps> = ({ onAdd }) => {
     }));
 
     if (validNavs.length === 0) {
-        alert("Please add at least one NAV entry.");
+        console.error("Please add at least one NAV entry.");
         setIsProcessing(false);
         return;
     }
@@ -77,21 +77,26 @@ export const CustomFundForm: React.FC<CustomFundFormProps> = ({ onAdd }) => {
 
     // Simulate a small delay for UX
     setTimeout(() => {
-        onAdd(
-            name,
-            type,
-            parseFloat(amount),
-            startDate,
-            endDate || undefined,
-            validNavs,
-            tagList
-        );
-        setIsProcessing(false);
-        // Reset form
-        setName('');
-        setAmount('');
-        setNavRows([{ date: '', nav: '' }]);
-        setTags('');
+        try {
+          onAdd(
+              name,
+              type,
+              parseFloat(amount),
+              startDate,
+              endDate || undefined,
+              validNavs,
+              tagList
+          );
+          // Reset form
+          setName('');
+          setAmount('');
+          setNavRows([{ date: '', nav: '' }]);
+          setTags('');
+        } catch (err) {
+          console.error("Failed to add custom fund:", err);
+        } finally {
+          setIsProcessing(false);
+        }
     }, 500);
   };
 

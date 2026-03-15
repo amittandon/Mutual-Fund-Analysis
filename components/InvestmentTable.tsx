@@ -1,16 +1,18 @@
 import React from 'react';
 import { Investment, InvestmentType } from '../types';
-import { Trash2, IndianRupee, Tag, ArrowRight, TrendingUp, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Trash2, IndianRupee, Tag, ArrowRight, TrendingUp, AlertTriangle, RefreshCw, LogOut, Edit2 } from 'lucide-react';
 import { formatCurrency } from '../utils/financials';
 
 interface InvestmentTableProps {
   investments: Investment[];
   onRemove: (id: string) => void;
+  onEdit?: (investment: Investment) => void;
   onRefresh?: (id: string) => void;
+  onRedeem?: (investment: Investment) => void;
   processingId?: string | null;
 }
 
-export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, onRemove, onRefresh, processingId }) => {
+export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, onRemove, onEdit, onRefresh, onRedeem, processingId }) => {
   if (investments.length === 0) {
     return (
       <div className="text-center py-16 bg-white rounded-2xl border border-dashed border-slate-300 shadow-sm">
@@ -48,16 +50,26 @@ export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, o
                     <span className="font-semibold text-slate-900 line-clamp-2 max-w-xs" title={inv.name}>
                       {inv.name}
                     </span>
-                    {inv.tags && inv.tags.length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {inv.tags.map(tag => (
-                          <span key={tag} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
-                            <Tag size={8} className="mr-1 opacity-50" />
-                            {tag}
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {inv.isLoading && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-100 animate-pulse">
+                          <RefreshCw size={8} className="mr-1 animate-spin" />
+                          Updating...
+                        </span>
+                      )}
+                      {inv.error && (
+                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-600 border border-red-100" title={inv.error}>
+                          <AlertTriangle size={8} className="mr-1" />
+                          Error
+                        </span>
+                      )}
+                      {inv.tags && inv.tags.length > 0 && inv.tags.map(tag => (
+                        <span key={tag} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-500 border border-slate-200">
+                          <Tag size={8} className="mr-1 opacity-50" />
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
                   </div>
                 </td>
                 <td className="px-6 py-4">
@@ -113,6 +125,15 @@ export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, o
                 </td>
                 <td className="px-6 py-4 text-center">
                   <div className="flex items-center justify-center gap-2">
+                    {onEdit && (
+                      <button
+                        onClick={() => onEdit(inv)}
+                        className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                        title="Edit Name"
+                      >
+                        <Edit2 size={16} />
+                      </button>
+                    )}
                     {onRefresh && inv.source !== 'CUSTOM' && (
                       <button
                         onClick={() => onRefresh(inv.id)}
@@ -121,6 +142,15 @@ export const InvestmentTable: React.FC<InvestmentTableProps> = ({ investments, o
                         title="Refresh NAV"
                       >
                         <RefreshCw size={16} className={processingId === inv.id ? 'animate-spin' : ''} />
+                      </button>
+                    )}
+                    {onRedeem && (
+                      <button
+                        onClick={() => onRedeem(inv)}
+                        className="p-2 text-slate-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+                        title="Redeem"
+                      >
+                        <LogOut size={16} />
                       </button>
                     )}
                     <button

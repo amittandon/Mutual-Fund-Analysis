@@ -3,7 +3,7 @@ import { Search, X, TrendingUp, Loader2 } from 'lucide-react';
 import { searchMF, MFScheme } from '../services/mfApiService';
 
 interface BenchmarkSelectorProps {
-  onSelect: (scheme: MFScheme | null) => void;
+  onSelect: (scheme: MFScheme | null) => Promise<void>;
   selectedScheme: MFScheme | null;
 }
 
@@ -26,13 +26,18 @@ export const BenchmarkSelector: React.FC<BenchmarkSelectorProps> = ({ onSelect, 
 
     setIsSearching(true);
     searchTimeout.current = setTimeout(async () => {
-      const data = await searchMF(query);
-      // We want to allow ETFs (which track indices) and Index Funds.
-      // Usually "Nifty" or "Sensex" searches return ETFs like "Nippon India ETF Nifty 50 BeES".
-      // We no longer strictly filter for "growth" only, as ETFs might be named differently, 
-      // but we still limit results.
-      setResults(data.slice(0, 15));
-      setIsSearching(false);
+      try {
+        const data = await searchMF(query);
+        // We want to allow ETFs (which track indices) and Index Funds.
+        // Usually "Nifty" or "Sensex" searches return ETFs like "Nippon India ETF Nifty 50 BeES".
+        // We no longer strictly filter for "growth" only, as ETFs might be named differently, 
+        // but we still limit results.
+        setResults(data.slice(0, 15));
+      } catch (err) {
+        console.error("Benchmark search failed", err);
+      } finally {
+        setIsSearching(false);
+      }
     }, 500);
 
     return () => {
@@ -50,15 +55,23 @@ export const BenchmarkSelector: React.FC<BenchmarkSelectorProps> = ({ onSelect, 
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleSelect = (scheme: MFScheme) => {
-    onSelect(scheme);
-    setIsOpen(false);
-    setQuery('');
+  const handleSelect = async (scheme: MFScheme) => {
+    try {
+      await onSelect(scheme);
+      setIsOpen(false);
+      setQuery('');
+    } catch (err) {
+      console.error("Failed to select benchmark:", err);
+    }
   };
 
-  const clearSelection = (e: React.MouseEvent) => {
+  const clearSelection = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    onSelect(null);
+    try {
+      await onSelect(null);
+    } catch (err) {
+      console.error("Failed to clear benchmark:", err);
+    }
   };
 
   return (

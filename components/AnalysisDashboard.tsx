@@ -1,7 +1,7 @@
 import React, { useMemo } from 'react';
 import { Investment, NAVData } from '../types';
 import { calculateFundRatios, formatCurrency } from '../utils/financials';
-import { TrendingUp, Activity, Scale, Percent, AlertCircle } from 'lucide-react';
+import { TrendingUp, Activity, Scale, Percent, AlertCircle, TrendingDown } from 'lucide-react';
 
 interface AnalysisDashboardProps {
   investments: Investment[];
@@ -48,7 +48,7 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ investment
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-300">
       
       {/* Portfolio Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
         <MetricCard 
             title="Portfolio XIRR" 
             value={`${data.portfolio.xirr.toFixed(2)}%`}
@@ -57,11 +57,25 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ investment
             colorClass="text-emerald-600"
         />
         <MetricCard 
+            title="Total Redeemed" 
+            value={formatCurrency(data.portfolio.totalRedeemed)}
+            icon={<Activity size={20} className="text-amber-500" />}
+            desc="Cash Outflows"
+            colorClass="text-amber-600"
+        />
+        <MetricCard 
             title="Portfolio Volatility" 
             value={`${data.portfolio.volatility.toFixed(2)}%`}
             icon={<Activity size={20} className="text-orange-500" />}
             desc="Annualized Std Dev"
             colorClass="text-orange-500"
+        />
+        <MetricCard 
+            title="Max Drawdown" 
+            value={`-${data.portfolio.maxDrawdown.toFixed(2)}%`}
+            icon={<TrendingDown size={20} className="text-red-500" />}
+            desc="Peak to Trough Decline"
+            colorClass="text-red-600"
         />
         <MetricCard 
             title="Beta (vs Benchmark)" 
@@ -97,9 +111,11 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ investment
                     <tr>
                         <th className="px-6 py-3">Fund Name</th>
                         <th className="px-6 py-3 text-right">Invested</th>
+                        <th className="px-6 py-3 text-right">Redeemed</th>
                         <th className="px-6 py-3 text-right">Current Value</th>
                         <th className="px-6 py-3 text-right text-emerald-600">XIRR</th>
                         <th className="px-6 py-3 text-right">Volatility</th>
+                        <th className="px-6 py-3 text-right text-red-500">Max DD</th>
                         <th className="px-6 py-3 text-right text-blue-600">Beta</th>
                         <th className="px-6 py-3 text-right text-violet-600">Alpha</th>
                     </tr>
@@ -111,9 +127,11 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ investment
                                 {fund.name}
                             </td>
                             <td className="px-6 py-4 text-right whitespace-nowrap">{formatCurrency(fund.invested)}</td>
+                            <td className="px-6 py-4 text-right whitespace-nowrap text-amber-600">{formatCurrency(fund.totalRedeemed || 0)}</td>
                             <td className="px-6 py-4 text-right whitespace-nowrap">{formatCurrency(fund.currentValue)}</td>
                             <td className="px-6 py-4 text-right font-semibold text-emerald-600">{fund.xirr.toFixed(2)}%</td>
                             <td className="px-6 py-4 text-right">{fund.volatility.toFixed(2)}%</td>
+                            <td className="px-6 py-4 text-right text-red-500">-{fund.maxDrawdown.toFixed(2)}%</td>
                             <td className="px-6 py-4 text-right text-slate-600">
                                 {hasBenchmark ? fund.beta.toFixed(2) : '-'}
                             </td>
@@ -125,9 +143,11 @@ export const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ investment
                     <tr className="bg-slate-50 font-bold border-t border-slate-200">
                         <td className="px-6 py-4">Total Portfolio</td>
                         <td className="px-6 py-4 text-right">{formatCurrency(data.portfolio.invested)}</td>
+                        <td className="px-6 py-4 text-right text-amber-700">{formatCurrency(data.portfolio.totalRedeemed)}</td>
                         <td className="px-6 py-4 text-right">{formatCurrency(data.portfolio.currentValue)}</td>
                         <td className="px-6 py-4 text-right text-emerald-700">{data.portfolio.xirr.toFixed(2)}%</td>
                         <td className="px-6 py-4 text-right text-slate-900">{data.portfolio.volatility.toFixed(2)}%</td>
+                        <td className="px-6 py-4 text-right text-red-700">-{data.portfolio.maxDrawdown.toFixed(2)}%</td>
                         <td className="px-6 py-4 text-right text-blue-700">{hasBenchmark ? data.portfolio.beta.toFixed(2) : '-'}</td>
                         <td className="px-6 py-4 text-right text-violet-700">{hasBenchmark ? data.portfolio.alpha.toFixed(2) + '%' : '-'}</td>
                     </tr>
