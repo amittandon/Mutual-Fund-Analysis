@@ -12,10 +12,11 @@ import { FundPerformance } from './components/FundPerformance';
 import { RedemptionModal } from './components/RedemptionModal';
 import { RedemptionHistory } from './components/RedemptionHistory';
 import { EditInvestmentModal } from './components/EditInvestmentModal';
+import { FundManager } from './components/FundManager';
 import { Investment, InvestmentType, NAVData, Redemption } from './types';
-import { getMFData, isDirectPlan, MFScheme, DEAD_FUND_MAPPING } from './services/mfApiService';
-import { generateBacktestData, formatCurrency, calculatePortfolioStats } from './utils/financials';
-import { Info, FilterX, AlertCircle, BarChart3, PieChart, Download, Upload, Wallet, TrendingDown, TrendingUp, Activity, ShieldCheck, Tag, LayoutDashboard, List, PlusCircle, Database, Calculator, FileText, RefreshCw, LogOut, X } from 'lucide-react';
+import { getMFData, isDirectPlan, MFScheme, DEAD_FUND_MAPPING, downsampleNAVData } from './services/mfApiService';
+import { generateBacktestData, formatCurrency, calculatePortfolioStats, parseISODate, getLatestValidNav } from './utils/financials';
+import { Info, FilterX, AlertCircle, BarChart3, PieChart, Download, Upload, Wallet, TrendingDown, TrendingUp, Activity, ShieldCheck, Tag, LayoutDashboard, List, PlusCircle, Database, Calculator, FileText, RefreshCw, LogOut, X, ArrowRightLeft } from 'lucide-react';
 
 const App: React.FC = () => {
   const [investments, setInvestments] = useState<Investment[]>([]);
@@ -28,7 +29,7 @@ const App: React.FC = () => {
   const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
   
   // Navigation State
-  const [currentTab, setCurrentTab] = useState<'DASHBOARD' | 'PORTFOLIO' | 'FUND_DETAILS' | 'ADD_FUND' | 'ADD_CUSTOM' | 'TAX_HARVESTING' | 'REDEMPTIONS'>('DASHBOARD');
+  const [currentTab, setCurrentTab] = useState<'DASHBOARD' | 'PORTFOLIO' | 'FUND_DETAILS' | 'ADD_FUND' | 'ADD_CUSTOM' | 'TAX_HARVESTING' | 'REDEMPTIONS' | 'FUND_MANAGER'>('DASHBOARD');
   const [analysisView, setAnalysisView] = useState<'CHART' | 'RATIOS'>('CHART');
   
   // Benchmark State
@@ -37,12 +38,67 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const getImportantDates = (inv: Investment): string[] => {
+    const dates: string[] = [];
+    const start = parseISODate(inv.startDate);
+    
+    const formatDate = (d: Date) => {
+      const day = String(d.getDate()).padStart(2, '0');
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      const year = d.getFullYear();
+      return `${day}-${month}-${year}`;
+    };
+
+    if (inv.type === InvestmentType.LUMPSUM) {
+      dates.push(formatDate(start));
+    } else {
+      const startDay = start.getDate();
+      const now = new Date();
+      let cursorDate = new Date(start);
+      cursorDate.setDate(1);
+
+      while (cursorDate <= now) {
+        const year = cursorDate.getFullYear();
+        const month = cursorDate.getMonth();
+        const maxDayInMonth = new Date(year, month + 1, 0).getDate();
+        const actualDay = Math.min(startDay, maxDayInMonth);
+        const paymentDate = new Date(year, month, actualDay);
+
+        if (paymentDate >= start && paymentDate <= now && (!inv.endDate || paymentDate <= parseISODate(inv.endDate))) {
+          dates.push(formatDate(paymentDate));
+        }
+        cursorDate.setMonth(cursorDate.getMonth() + 1);
+      }
+    }
+    
+    inv.redemptions?.forEach(r => {
+      const d = parseISODate(r.date);
+      if (!isNaN(d.getTime())) {
+        dates.push(formatDate(d));
+      }
+    });
+
+    return dates;
+  };
+
   const migrateInvestments = (invs: Investment[]): Investment[] => {
     return invs.map(inv => {
       if (inv.source === 'CUSTOM') return inv;
       
       let updated = { ...inv };
       let needsRefresh = false;
+
+      // Check if history is missing (as we don't save it to localStorage anymore)
+      if (!inv.navHistory || inv.navHistory.length === 0) {
+        needsRefresh = true;
+      } else {
+        // Migration: Downsample old data if it exists
+        const importantDates = getImportantDates(inv);
+        updated.navHistory = downsampleNAVData(inv.navHistory, importantDates);
+        if (inv.counterpartNavHistory && inv.counterpartNavHistory.length > 0) {
+          updated.counterpartNavHistory = downsampleNAVData(inv.counterpartNavHistory, importantDates);
+        }
+      }
 
       // Check main scheme
       const codeStr = String(inv.schemeCode);
@@ -81,13 +137,9 @@ const App: React.FC = () => {
         const migrated = migrateInvestments(parsed);
         setInvestments(migrated);
         
-        // If any investments were migrated and need refresh, trigger it
-        if (migrated.some(i => i.isLoading)) {
-          // We can't easily call refreshNavs here because it depends on state,
-          // but the user can click "Refresh All NAVs" or we can just let the
-          // individual components fetch if they are missing data.
-          // Actually, let's just leave them as isLoading=true and let the user refresh,
-          // or we can trigger a refresh. Let's trigger a refresh.
+        // Trigger refresh for loaded investments since we don't save history to avoid quota limits
+        if (migrated.length > 0) {
+          refreshNavs(migrated);
         }
       } catch (e) {
         console.error("Failed to parse saved portfolio");
@@ -96,7 +148,23 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('mf_portfolio_v2', JSON.stringify(investments));
+    try {
+      // Strip history to avoid QuotaExceededError in localStorage
+      // We only save the metadata and transaction details
+      const strippedInvs = investments.map(inv => ({
+        ...inv,
+        navHistory: [],
+        counterpartNavHistory: [],
+        isLoading: false // Reset loading state for saved data
+      }));
+      localStorage.setItem('mf_portfolio_v2', JSON.stringify(strippedInvs));
+    } catch (e) {
+      console.error("Failed to save to localStorage", e);
+      // If it still fails even after stripping (very unlikely unless there are thousands of transactions)
+      if (e instanceof Error && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED')) {
+         console.warn("Local storage quota exceeded even after stripping history.");
+      }
+    }
   }, [investments]);
 
   // Handle Benchmark Changes
@@ -106,7 +174,8 @@ const App: React.FC = () => {
           try {
               const data = await getMFData(scheme.schemeCode);
               if (data) {
-                  setBenchmarkHistory(data.data);
+                  // Downsample benchmark too
+                  setBenchmarkHistory(downsampleNAVData(data.data));
               }
           } catch (e) {
               console.error("Failed to fetch benchmark", e);
@@ -252,36 +321,56 @@ const App: React.FC = () => {
     schemeCode?: string; 
     isDirect?: boolean; 
     counterpartSchemeCode?: string | null;
-    source?: 'AMFI' | 'CUSTOM';
+    counterpartName?: string;
+    source?: 'API' | 'CUSTOM';
+    startDate?: string;
   }) => {
     const inv = investments.find(i => i.id === id);
     if (!inv) return;
 
     let navHistory = inv.navHistory;
+    let counterpartNavHistory = inv.counterpartNavHistory;
     
-    // If scheme changed, fetch new history
-    if (updates.schemeCode && updates.schemeCode !== inv.schemeCode) {
-      setProcessingId(id);
-      try {
+    setProcessingId(id);
+
+    try {
+      // If primary scheme changed, fetch new history
+      if (updates.schemeCode && updates.schemeCode !== inv.schemeCode) {
         const data = await getMFData(updates.schemeCode);
-        if (!data) throw new Error("No data returned from API");
-        navHistory = data.data;
-      } catch (error) {
-        console.error("Failed to fetch new fund data:", error);
-        setProcessingId(null);
-        return;
+        if (data) navHistory = data.data;
       }
+
+      // If counterpart scheme changed, fetch new history
+      if (updates.counterpartSchemeCode !== undefined && updates.counterpartSchemeCode !== inv.counterpartSchemeCode) {
+        if (updates.counterpartSchemeCode) {
+          const data = await getMFData(updates.counterpartSchemeCode);
+          if (data) counterpartNavHistory = data.data;
+        } else {
+          counterpartNavHistory = undefined;
+        }
+      }
+
+      // Re-downsample if needed
+      const mergedInv = { ...inv, ...updates };
+      const importantDates = getImportantDates(mergedInv);
+      
+      if (navHistory) navHistory = downsampleNAVData(navHistory, importantDates);
+      if (counterpartNavHistory) counterpartNavHistory = downsampleNAVData(counterpartNavHistory, importantDates);
+
+      setInvestments(prev => prev.map(i => 
+        i.id === id ? { 
+          ...i, 
+          ...updates,
+          navHistory: navHistory || i.navHistory,
+          counterpartNavHistory: counterpartNavHistory,
+          isLoading: false
+        } : i
+      ));
+    } catch (error) {
+      console.error("Failed to update investment data:", error);
+    } finally {
       setProcessingId(null);
     }
-
-    setInvestments(prev => prev.map(i => 
-      i.id === id ? { 
-        ...i, 
-        ...updates,
-        navHistory: navHistory,
-        isLoading: false
-      } : i
-    ));
   };
 
   const addRedemption = (investmentId: string, redemption: Redemption) => {
@@ -328,14 +417,16 @@ const App: React.FC = () => {
         counterpartData = await getMFData(inv.counterpartSchemeCode);
       }
       
+      const importantDates = getImportantDates(inv);
+
       setInvestments(prev => prev.map(i => {
         if (i.id === id) {
           return {
             ...i,
             category: mainData?.meta?.scheme_category || i.category,
             fundHouse: mainData?.meta?.fund_house || i.fundHouse,
-            navHistory: mainData?.data || i.navHistory,
-            counterpartNavHistory: counterpartData?.data || i.counterpartNavHistory,
+            navHistory: downsampleNAVData(mainData.data, importantDates),
+            counterpartNavHistory: counterpartData ? downsampleNAVData(counterpartData.data, importantDates) : i.counterpartNavHistory,
             isLoading: false,
             error: undefined
           };
@@ -368,16 +459,23 @@ const App: React.FC = () => {
           counterpartData = await getMFData(inv.counterpartSchemeCode);
         }
         
+        const importantDates = getImportantDates(inv);
+
         setInvestments(prev => {
           const newInvs = [...prev];
           const index = newInvs.findIndex(i => i.id === inv.id);
           if (index !== -1) {
+            const latestNav = mainData ? getLatestValidNav(mainData.data) : 0;
+            const latestCpNav = counterpartData ? getLatestValidNav(counterpartData.data) : 0;
+
             newInvs[index] = {
               ...newInvs[index],
               category: mainData?.meta?.scheme_category || newInvs[index].category,
               fundHouse: mainData?.meta?.fund_house || newInvs[index].fundHouse,
-              navHistory: mainData?.data || newInvs[index].navHistory,
-              counterpartNavHistory: counterpartData?.data || newInvs[index].counterpartNavHistory,
+              navHistory: mainData ? downsampleNAVData(mainData.data, importantDates) : newInvs[index].navHistory,
+              currentNav: latestNav || newInvs[index].currentNav,
+              counterpartNavHistory: counterpartData ? downsampleNAVData(counterpartData.data, importantDates) : newInvs[index].counterpartNavHistory,
+              counterpartCurrentNav: latestCpNav || newInvs[index].counterpartCurrentNav,
               isLoading: false,
               error: mainData ? undefined : "Failed to fetch NAV data"
             };
@@ -407,7 +505,7 @@ const App: React.FC = () => {
     fetchMissingNavs(investments).catch(err => console.error("fetchMissingNavs error", err));
   }, [investments.map(i => i.isLoading).join(',')]);
 
-  const refreshNavs = async () => {
+  const refreshNavs = async (targetInvs?: Investment[] | React.MouseEvent) => {
     if (isProcessing) return;
     
     try {
@@ -416,9 +514,15 @@ const App: React.FC = () => {
       
       let errorCount = 0;
       
-      // We iterate over a snapshot of the current investments
-      const currentInvs = [...investments];
+      // We iterate over a snapshot of the current investments or the provided target
+      // If called from onClick, targetInvs will be an event object, so we default to investments
+      const currentInvs = Array.isArray(targetInvs) ? targetInvs : [...investments];
       
+      if (currentInvs.length === 0) {
+        setIsProcessing(false);
+        return;
+      }
+
       for (const inv of currentInvs) {
         if (inv.source === 'CUSTOM') continue;
         
@@ -436,14 +540,21 @@ const App: React.FC = () => {
             counterpartData = await getMFData(inv.counterpartSchemeCode);
           }
           
+          const importantDates = getImportantDates(inv);
+          
           setInvestments(prev => prev.map(i => {
             if (i.id === inv.id) {
+              const latestNav = getLatestValidNav(mainData.data);
+              const latestCpNav = counterpartData ? getLatestValidNav(counterpartData.data) : i.counterpartCurrentNav;
+
               return {
                 ...i,
                 category: mainData?.meta?.scheme_category || i.category,
                 fundHouse: mainData?.meta?.fund_house || i.fundHouse,
-                navHistory: mainData?.data || i.navHistory,
-                counterpartNavHistory: counterpartData?.data || i.counterpartNavHistory,
+                navHistory: downsampleNAVData(mainData.data, importantDates),
+                currentNav: latestNav || i.currentNav,
+                counterpartNavHistory: counterpartData ? downsampleNAVData(counterpartData.data, importantDates) : i.counterpartNavHistory,
+                counterpartCurrentNav: latestCpNav || i.counterpartCurrentNav,
                 isLoading: false,
                 error: undefined
               };
@@ -585,6 +696,12 @@ const App: React.FC = () => {
                 className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'REDEMPTIONS' ? 'bg-white text-amber-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                   <LogOut size={16} className="mr-2"/> Redemptions
+              </button>
+              <button 
+                onClick={() => setCurrentTab('FUND_MANAGER')}
+                className={`flex items-center px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${currentTab === 'FUND_MANAGER' ? 'bg-white text-blue-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                  <ArrowRightLeft size={16} className="mr-2"/> Fund Manager
               </button>
           </nav>
 
@@ -960,7 +1077,19 @@ const App: React.FC = () => {
              </section>
         )}
 
-        {/* VIEW: REDEMPTIONS */}
+        {/* VIEW: FUND MANAGER */}
+        {currentTab === 'FUND_MANAGER' && (
+             <section className="animate-in fade-in slide-in-from-right-4 duration-300">
+                  <div className="mb-6">
+                      <h3 className="text-xl font-bold text-slate-900">Fund Manager</h3>
+                      <p className="text-sm text-slate-500">Verify and fix fund codes and their counterparts for accurate comparison</p>
+                  </div>
+                  <FundManager 
+                    investments={investments}
+                    onUpdateFund={updateInvestment}
+                  />
+             </section>
+        )}
         {currentTab === 'REDEMPTIONS' && (
              <section className="animate-in fade-in slide-in-from-right-4 duration-300 max-w-5xl mx-auto">
                   <div className="mb-6">

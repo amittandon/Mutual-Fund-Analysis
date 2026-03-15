@@ -1,21 +1,33 @@
 import { Investment, ChartDataPoint, InvestmentType, NAVData, PortfolioMetrics } from '../types';
 
-// Helper to parse "dd-mm-yyyy" (API format) to Date object (Local Midnight)
-const parseAPIDate = (dateStr: string): Date => {
+// Helper to parse any date format ("dd-mm-yyyy" or "yyyy-mm-dd") to Date object (Local Midnight)
+export const parseAnyDate = (dateStr: string): Date => {
   if (!dateStr || typeof dateStr !== 'string') return new Date(NaN);
   const parts = dateStr.split('-');
   if (parts.length !== 3) return new Date(NaN);
-  const [d, m, y] = parts.map(Number);
-  return new Date(y, m - 1, d);
+  
+  const p0 = Number(parts[0]);
+  const p1 = Number(parts[1]);
+  const p2 = Number(parts[2]);
+
+  if (p0 > 1000) {
+    // yyyy-mm-dd
+    return new Date(p0, p1 - 1, p2);
+  } else if (p2 > 1000) {
+    // dd-mm-yyyy
+    return new Date(p2, p1 - 1, p0);
+  }
+  return new Date(NaN);
+};
+
+// Helper to parse "dd-mm-yyyy" (API format) to Date object (Local Midnight)
+export const parseAPIDate = (dateStr: string): Date => {
+  return parseAnyDate(dateStr);
 };
 
 // Helper to parse "yyyy-mm-dd" (Input format) to Date object (Local Midnight)
-const parseISODate = (dateStr: string): Date => {
-  if (!dateStr || typeof dateStr !== 'string') return new Date(NaN);
-  const parts = dateStr.split('-');
-  if (parts.length !== 3) return new Date(NaN);
-  const [y, m, d] = parts.map(Number);
-  return new Date(y, m - 1, d);
+export const parseISODate = (dateStr: string): Date => {
+  return parseAnyDate(dateStr);
 };
 
 const isValidDate = (d: Date) => d instanceof Date && !isNaN(d.getTime());
@@ -46,13 +58,15 @@ const getNAV = (history: NAVData[], targetDate: Date, mode: 'PURCHASE' | 'VALUAT
       const d = parseAPIDate(history[i].date);
       if (isValidDate(d) && d.getTime() >= targetTime) {
         const nav = parseFloat(history[i].nav);
-        return isNaN(nav) ? null : nav;
+        if (!isNaN(nav) && nav > 0) return nav;
       }
     }
-    // If target is after last known date, return last known
+    // If target is after last known date, return last known valid
     if (targetTime > latestDate.getTime()) {
-        const nav = parseFloat(history[0].nav);
-        return isNaN(nav) ? null : nav;
+        for (let i = 0; i < history.length; i++) {
+          const nav = parseFloat(history[i].nav);
+          if (!isNaN(nav) && nav > 0) return nav;
+        }
     }
     return null;
   } else {
@@ -65,11 +79,21 @@ const getNAV = (history: NAVData[], targetDate: Date, mode: 'PURCHASE' | 'VALUAT
       const d = parseAPIDate(entry.date);
       if (isValidDate(d) && d.getTime() <= targetTime) {
         const nav = parseFloat(entry.nav);
-        return isNaN(nav) ? null : nav;
+        if (!isNaN(nav) && nav > 0) return nav;
       }
     }
     return null;
   }
+};
+
+// Helper to pick the latest valid (non-zero) NAV from history
+export const getLatestValidNav = (history: NAVData[]): number => {
+    if (!history || history.length === 0) return 0;
+    for (const entry of history) {
+        const val = parseFloat(entry.nav);
+        if (!isNaN(val) && val > 0) return val;
+    }
+    return 0;
 };
 
 interface CashFlow {
@@ -167,7 +191,7 @@ export const simulateInvestment = (inv: Investment, navHistory: NAVData[] | unde
     });
 
     // Calculate Current Value
-    const currentNav = parseFloat(navHistory[0].nav);
+    const currentNav = getLatestValidNav(navHistory);
     const currentValue = units * currentNav;
 
     return {
@@ -206,10 +230,8 @@ export const getInstallments = (inv: Investment): Installment[] => {
     const now = new Date();
     now.setHours(0,0,0,0);
     
-    const latestNavEntry = navHistory[0];
-    if (!latestNavEntry) return [];
-    const currentNav = parseFloat(latestNavEntry.nav);
-    if (isNaN(currentNav)) return [];
+    const currentNav = getLatestValidNav(navHistory);
+    if (currentNav === 0) return [];
 
     if (inv.type === InvestmentType.LUMPSUM) {
         const nav = getNAV(navHistory, startDate, 'PURCHASE');
@@ -858,7 +880,7 @@ export const calculateFundRatios = (investments: Investment[], benchmarkHistory:
              const bStartNav = getNAV(benchmarkHistory, startDate, 'PURCHASE');
              
              if (bStartNav) {
-                const bEndNav = parseFloat(benchmarkHistory[0].nav);
+                const bEndNav = getLatestValidNav(benchmarkHistory);
                 const years = (now.getTime() - startDate.getTime()) / (1000 * 3600 * 24 * 365);
                 
                 // Market Return (Annualized CAGR over the period)

@@ -11,12 +11,14 @@ interface EditInvestmentModalProps {
     schemeCode?: string; 
     isDirect?: boolean; 
     counterpartSchemeCode?: string | null;
-    source?: 'AMFI' | 'CUSTOM';
+    source?: 'API' | 'CUSTOM';
+    startDate?: string;
   }) => Promise<void>;
 }
 
 export const EditInvestmentModal: React.FC<EditInvestmentModalProps> = ({ investment, onClose, onSave }) => {
   const [name, setName] = useState(investment.name);
+  const [startDate, setStartDate] = useState(investment.startDate);
   const [isCustom, setIsCustom] = useState(investment.source === 'CUSTOM');
   
   // Search state for AMFI funds
@@ -31,6 +33,7 @@ export const EditInvestmentModal: React.FC<EditInvestmentModalProps> = ({ invest
 
   useEffect(() => {
     setName(investment.name);
+    setStartDate(investment.startDate);
     setIsCustom(investment.source === 'CUSTOM');
   }, [investment]);
 
@@ -92,12 +95,14 @@ export const EditInvestmentModal: React.FC<EditInvestmentModalProps> = ({ invest
           schemeCode: selectedScheme.schemeCode,
           isDirect: isDirect,
           counterpartSchemeCode: counterpart?.schemeCode || null,
-          source: 'AMFI'
+          source: 'API',
+          startDate: startDate
         });
       } else {
         // Just name change or custom fund update
         await onSave(investment.id, { 
           name: name.trim(),
+          startDate: startDate
           // If it was AMFI and we just changed name, keep other data
           // If it was CUSTOM, keep it CUSTOM
         });
@@ -177,25 +182,41 @@ export const EditInvestmentModal: React.FC<EditInvestmentModalProps> = ({ invest
           )}
 
           {/* Display Name Input */}
-          <div className="space-y-2">
-            <label className="text-sm font-semibold text-slate-700">
-              Display Name
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
-              placeholder="Enter fund name"
-              required
-            />
-            {selectedScheme && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700">
+                Display Name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                placeholder="Enter fund name"
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-semibold text-slate-700">
+                Start Date
+              </label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-slate-900 focus:border-transparent outline-none transition-all"
+                required
+              />
+            </div>
+          </div>
+
+          {selectedScheme && (
               <div className="flex items-center gap-2 text-xs text-emerald-600 font-medium bg-emerald-50 p-2 rounded-lg border border-emerald-100">
                 <AlertCircle size={14} />
                 New fund selected. Data will be re-fetched from AMFI.
               </div>
             )}
-          </div>
 
           <div className="flex gap-3 pt-2">
             <button

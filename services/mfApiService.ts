@@ -87,6 +87,26 @@ export const LEGACY_STITCH_MAP: Record<string, string[]> = {
   '151024': ['119109'],                     // HSBC ELSS Dir
 };
 
+// Helper to parse any date format ("dd-mm-yyyy" or "yyyy-mm-dd") to Date object
+const parseAnyDate = (dateStr: string): Date => {
+  if (!dateStr || typeof dateStr !== 'string') return new Date(NaN);
+  const parts = dateStr.split('-');
+  if (parts.length !== 3) return new Date(NaN);
+  
+  const p0 = Number(parts[0]);
+  const p1 = Number(parts[1]);
+  const p2 = Number(parts[2]);
+
+  if (p0 > 1000) {
+    // yyyy-mm-dd
+    return new Date(p0, p1 - 1, p2);
+  } else if (p2 > 1000) {
+    // dd-mm-yyyy
+    return new Date(p2, p1 - 1, p0);
+  }
+  return new Date(NaN);
+};
+
 export const getMFData = async (code: string, retries = 2): Promise<MFData | null> => {
   const cleanedCode = String(code).trim();
   if (!cleanedCode || cleanedCode === 'undefined' || cleanedCode === 'null') {
@@ -149,11 +169,7 @@ export const getMFData = async (code: string, retries = 2): Promise<MFData | nul
     }
 
     // Re-sort by date descending (latest first)
-    const parseDate = (s: string) => {
-      const [d, m, y] = s.split('-').map(Number);
-      return new Date(y, m - 1, d).getTime();
-    };
-    stitchedHistory.sort((a, b) => parseDate(b.date) - parseDate(a.date));
+    stitchedHistory.sort((a, b) => parseAnyDate(b.date).getTime() - parseAnyDate(a.date).getTime());
     
     return {
       ...mainData,
@@ -162,6 +178,70 @@ export const getMFData = async (code: string, retries = 2): Promise<MFData | nul
   }
 
   return mainData;
+};
+
+/**
+ * Downsamples NAV data to reduce storage and memory footprint.
+ * - Keeps daily data for the last 30 days.
+ * - Keeps weekly data for the last year.
+ * - Keeps monthly data for older history.
+ * - Always preserves "importantDates" (e.g., transaction dates).
+ */
+export const downsampleNAVData = (
+  data: { date: string; nav: string; }[], 
+  importantDates: string[] = []
+): { date: string; nav: string; }[] => {
+  if (!data || data.length === 0) return [];
+  
+  // Ensure data is sorted descending (latest first) for consistent logic
+  const sortedData = [...data].sort((a, b) => parseAnyDate(b.date).getTime() - parseAnyDate(a.date).getTime());
+  
+  // Sort important dates for faster lookup
+  const importantSet = new Set(importantDates);
+  
+  const now = new Date();
+  const thirtyDaysAgo = new Date();
+  thirtyDaysAgo.setDate(now.getDate() - 30);
+  
+  const oneYearAgo = new Date();
+  oneYearAgo.setFullYear(now.getFullYear() - 1);
+
+  const result: { date: string; nav: string; }[] = [];
+  const seenWeeks = new Set<string>();
+  const seenMonths = new Set<string>();
+
+  // Data is now guaranteed to be descending (latest first)
+  for (const entry of sortedData) {
+    if (importantSet.has(entry.date)) {
+      result.push(entry);
+      continue;
+    }
+
+    const date = parseAnyDate(entry.date);
+    
+    if (date > thirtyDaysAgo) {
+      // Keep daily for last 30 days
+      result.push(entry);
+    } else if (date > oneYearAgo) {
+      // Keep weekly for data between 30 days and 1 year
+      const year = date.getFullYear();
+      const week = Math.floor(date.getDate() / 7);
+      const weekKey = `${year}-${date.getMonth()}-${week}`;
+      if (!seenWeeks.has(weekKey)) {
+        result.push(entry);
+        seenWeeks.add(weekKey);
+      }
+    } else {
+      // Keep monthly for data older than 1 year
+      const monthKey = `${date.getFullYear()}-${date.getMonth()}`;
+      if (!seenMonths.has(monthKey)) {
+        result.push(entry);
+        seenMonths.add(monthKey);
+      }
+    }
+  }
+
+  return result;
 };
 
 // Helper to check if a name looks like a Direct plan
