@@ -223,14 +223,15 @@ export const TaxHarvesting: React.FC<TaxHarvestingProps> = ({ investments }) => 
   }, [summaries, selectedTag]);
 
   const handleExportCSV = () => {
-    const headers = ['Fund Name', 'Type', 'Units', 'Gain/Loss', 'Current Value', 'Tag'];
-    const rows = consolidatedActions.map(a => [
+    const headers = ['Fund Name', 'Date', 'Type', 'Units', 'Gain/Loss', 'Current Value', 'Tag'];
+    const rows = filteredActions.map(a => [
       `"${a.fundName}"`,
+      a.date.toISOString().split('T')[0], // YYYY-MM-DD for better spreadsheet sorting
       a.type,
       a.units.toFixed(3),
       a.gain.toFixed(2),
       a.value.toFixed(2),
-      `"${a.tags[0]}"`
+      `"${a.tags?.[0] || 'Untagged'}"`
     ]);
 
     const csvContent = [

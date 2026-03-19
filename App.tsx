@@ -310,14 +310,32 @@ const App: React.FC = () => {
 
     let navHistory = inv.navHistory;
     let counterpartNavHistory = inv.counterpartNavHistory;
+    let category = inv.category;
+    let fundHouse = inv.fundHouse;
+    let isDirect = updates.isDirect !== undefined ? updates.isDirect : inv.isDirect;
     
     setProcessingId(id);
+    setInvestments(prev => prev.map(i => i.id === id ? { ...i, isLoading: true } : i));
 
     try {
-      // If primary scheme changed, fetch new history
-      if (updates.schemeCode && updates.schemeCode !== inv.schemeCode) {
-        const data = await getMFData(updates.schemeCode);
-        if (data) navHistory = data.data;
+      // If primary scheme changed OR startDate changed, fetch new history
+      const schemeChanged = updates.schemeCode && updates.schemeCode !== inv.schemeCode;
+      const startDateChanged = updates.startDate && updates.startDate !== inv.startDate;
+
+      if (schemeChanged || startDateChanged) {
+        const codeToFetch = updates.schemeCode || inv.schemeCode;
+        if (codeToFetch) {
+          const data = await getMFData(codeToFetch);
+          if (data) {
+            navHistory = data.data;
+            category = data.meta.scheme_category;
+            fundHouse = data.meta.fund_house;
+            // If isDirect wasn't explicitly provided, derive it from the new name
+            if (updates.isDirect === undefined) {
+              isDirect = isDirectPlan(data.meta.scheme_name);
+            }
+          }
+        }
       }
 
       // If counterpart scheme changed, fetch new history
@@ -337,10 +355,18 @@ const App: React.FC = () => {
       if (navHistory) navHistory = downsampleNAVData(navHistory, importantDates);
       if (counterpartNavHistory) counterpartNavHistory = downsampleNAVData(counterpartNavHistory, importantDates);
 
+      const latestNav = navHistory ? getLatestValidNav(navHistory) : 0;
+      const latestCpNav = counterpartNavHistory ? getLatestValidNav(counterpartNavHistory) : 0;
+
       setInvestments(prev => prev.map(i => 
         i.id === id ? { 
           ...i, 
           ...updates,
+          isDirect,
+          category,
+          fundHouse,
+          currentNav: latestNav || i.currentNav,
+          counterpartCurrentNav: latestCpNav || i.counterpartCurrentNav,
           navHistory: navHistory || i.navHistory,
           counterpartNavHistory: counterpartNavHistory,
           isLoading: false

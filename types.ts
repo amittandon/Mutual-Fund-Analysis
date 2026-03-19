@@ -46,6 +46,8 @@ export interface Investment {
   redemptions?: Redemption[]; // Track redemptions
   
   isLoading: boolean;
+  currentNav?: number;
+  counterpartCurrentNav?: number;
   error?: string;
 }
 
